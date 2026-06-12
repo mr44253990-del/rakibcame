@@ -71,11 +71,11 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.Date
 
-// Themes and Styles for DSLR Dashboard
-val CarbonDark = Color(0xFF121314)
-val CarbonMedium = Color(0xFF1C1D1E)
-val CharcoalGlass = Color(0xCC0D0E0F)
-val GoldMuted = Color(0xFFE5A93C)
+// Themes and Styles for DSLR Dashboard (High Density Design Theme)
+val CarbonDark = Color(0xFF0A0A0A)
+val CarbonMedium = Color(0xFF121212)
+val CharcoalGlass = Color(0x99000000) // Black/60 translucent glass
+val GoldMuted = Color(0xFFF97316) // Vibrant High Density Orange-500 Accent
 val LedGreen = Color(0xFF4CAF50)
 val LedRed = Color(0xFFF44336)
 val HUDTransparent = Color(0x7F101010)
@@ -585,19 +585,19 @@ fun CameraViewfinder(
                     .fillMaxSize()
                     .background(Color(0x2E1A237E)) // subtle navy tint to represent high sensor noise
             )
-        } else if (activeMode == "Portrait") {
-            // Draw vignette
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.radialGradient(
-                            colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.4f)),
-                            radius = 600f
-                        )
-                    )
-            )
         }
+
+        // Simulated Camera Lens View (High Density Vignette)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.5f)),
+                        radius = 800f
+                    )
+                )
+        )
 
         // Simple real CameraX overlay (transparent background so it binds in behind of HUD without breaking UI)
         // Hidden on non-supported platforms but registers provider calls securely.
@@ -1326,7 +1326,7 @@ fun RightSideQuickButtons(
                 onClick = onShowVoiceHelp,
                 modifier = Modifier
                     .clip(CircleShape)
-                    .background(Color(0x33E5993C))
+                    .background(GoldMuted.copy(alpha = 0.2f))
                     .size(36.dp)
             ) {
                 Icon(
@@ -1458,7 +1458,7 @@ fun ModeWheelChoiceSpinner(
             ) {
                 Text(
                     text = mode.uppercase(),
-                    color = if (selectedMode == mode) Color.Black else Color.Gray,
+                    color = if (selectedMode == mode) Color.Black else Color.White.copy(alpha = 0.6f),
                     fontSize = 9.sp,
                     fontWeight = FontWeight.Black,
                     fontFamily = FontFamily.Monospace
@@ -1506,21 +1506,63 @@ fun BottomNotificationCenter(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .padding(bottom = 16.dp)
+            .padding(bottom = 24.dp)
             .navigationBarsPadding(),
         contentAlignment = Alignment.BottomCenter
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Smart talking bubble description card
-            Card(
-                colors = CardDefaults.cardColors(containerColor = CharcoalGlass.copy(alpha = 0.9f)),
-                shape = RoundedCornerShape(20.dp),
-                border = BorderStroke(1.dp, GoldMuted.copy(alpha = 0.4f)),
-                modifier = Modifier.widthIn(max = 400.dp)
+            // High density animated pulsing waveform
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                val transition = rememberInfiniteTransition(label = "wave")
+                
+                val height1 by transition.animateFloat(
+                    initialValue = 6f,
+                    targetValue = 18f,
+                    animationSpec = infiniteRepeatable(tween(450, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+                    label = "h1"
+                )
+                val height2 by transition.animateFloat(
+                    initialValue = 12f,
+                    targetValue = 24f,
+                    animationSpec = infiniteRepeatable(tween(350, easing = LinearOutSlowInEasing), RepeatMode.Reverse),
+                    label = "h2"
+                )
+                val height3 by transition.animateFloat(
+                    initialValue = 8f,
+                    targetValue = 20f,
+                    animationSpec = infiniteRepeatable(tween(550, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+                    label = "h3"
+                )
+                val height4 by transition.animateFloat(
+                    initialValue = 14f,
+                    targetValue = 8f,
+                    animationSpec = infiniteRepeatable(tween(400, easing = LinearOutSlowInEasing), RepeatMode.Reverse),
+                    label = "h4"
+                )
+
+                Box(modifier = Modifier.size(2.dp, height1.dp).background(Color(0xFF60A5FA), RoundedCornerShape(1.dp)))
+                Box(modifier = Modifier.size(2.dp, height2.dp).background(Color(0xFF60A5FA), RoundedCornerShape(1.dp)))
+                Box(modifier = Modifier.size(2.dp, height3.dp).background(Color(0xFF60A5FA), RoundedCornerShape(1.dp)))
+                Box(modifier = Modifier.size(2.dp, height4.dp).background(Color(0xFF60A5FA), RoundedCornerShape(1.dp)))
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Smart talking bubble description card
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = CharcoalGlass.copy(alpha = 0.9f)),
+                    shape = RoundedCornerShape(20.dp),
+                    border = BorderStroke(1.dp, GoldMuted.copy(alpha = 0.4f)),
+                    modifier = Modifier.widthIn(max = 400.dp)
+                ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1583,6 +1625,7 @@ fun BottomNotificationCenter(
             }
         }
     }
+}
 }
 
 // -----------------------------------------------------------------------------
