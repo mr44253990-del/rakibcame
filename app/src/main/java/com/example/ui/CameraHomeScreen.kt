@@ -35,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -46,7 +47,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
@@ -94,7 +95,6 @@ fun CameraHomeScreen(
     val audioPermissionState = rememberPermissionState(android.Manifest.permission.RECORD_AUDIO)
 
     val hasPermissions = cameraPermissionState.status.isGranted && audioPermissionState.status.isGranted
-    var hasInitializedEngine by remember { mutableStateOf(false) }
 
     // Navigation and panels overlay state
     var showGalleryPanel by remember { mutableStateOf(false) }
@@ -105,7 +105,7 @@ fun CameraHomeScreen(
     // Quick Selectors in Left DSLR Drawer
     var activeManualModeSelector by remember { mutableStateOf("") } // "ISO", "SHUTTER", "WB", "FOCUS", ""
 
-    if (!hasPermissions || !hasInitializedEngine) {
+    if (!hasPermissions) {
         // Startup splash permissions flow view
         StartupStartupScreen(
             cameraGranted = cameraPermissionState.status.isGranted,
@@ -114,7 +114,6 @@ fun CameraHomeScreen(
             onRequestAudio = { audioPermissionState.launchPermissionRequest() },
             onStartEngine = {
                 if (cameraPermissionState.status.isGranted && audioPermissionState.status.isGranted) {
-                    hasInitializedEngine = true
                     viewModel.speakNow("camera initialization complete. voice recognition systems loaded.")
                 } else {
                     Toast.makeText(context, "Please grant Camera & Microphone permissions first.", Toast.LENGTH_LONG).show()
@@ -536,14 +535,39 @@ fun CameraViewfinder(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .blur(if (visualBlurAmount > 0) visualBlurAmount.dp else 0.dp)
+                .then(if (visualBlurAmount > 0) Modifier.blur(visualBlurAmount.dp) else Modifier)
         ) {
-            AsyncImage(
-                model = activeSceneItem.imagePath,
-                contentDescription = "Simulated Viewfinder Scenery Feed",
+            AndroidView(
+                factory = { ctx ->
+                    val previewView = PreviewView(ctx).apply {
+                        scaleType = PreviewView.ScaleType.FILL_CENTER
+                    }
+                    previewView
+                },
+                update = { previewView ->
+                    val cameraProviderFuture = ProcessCameraProvider.getInstance(previewView.context)
+                    cameraProviderFuture.addListener({
+                        try {
+                            val cameraProvider = cameraProviderFuture.get()
+                            val preview = Preview.Builder().build().also {
+                                it.setSurfaceProvider(previewView.surfaceProvider)
+                            }
+                            val selector = if (isLensFront == "FRONT") {
+                                CameraSelector.DEFAULT_FRONT_CAMERA
+                            } else {
+                                CameraSelector.DEFAULT_BACK_CAMERA
+                            }
+                            cameraProvider.unbindAll()
+                            cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview)
+                        } catch (e: Throwable) {
+                            // ignore if permissions are missing or no camera hardware exists
+                        }
+                    }, ContextCompat.getMainExecutor(previewView.context))
+                },
                 modifier = Modifier
                     .fillMaxSize()
-                    .drawBehind {
+                    .drawWithContent {
+                        drawContent()
                         // Drawing professional alignment grid lines
                         val verticalThree = size.width / 3
                         val horizontalThree = size.height / 3
@@ -571,9 +595,7 @@ fun CameraViewfinder(
                             end = Offset(size.width, horizontalThree * 2),
                             strokeWidth = 0.5.dp.toPx()
                         )
-                    },
-                colorFilter = ColorFilter.colorMatrix(tintFilterMatrix),
-                contentScale = ContentScale.Crop
+                    }
             )
         }
 
@@ -597,38 +619,6 @@ fun CameraViewfinder(
                         radius = 800f
                     )
                 )
-        )
-
-        // Simple real CameraX overlay (transparent background so it binds in behind of HUD without breaking UI)
-        // Hidden on non-supported platforms but registers provider calls securely.
-        AndroidView(
-            factory = { ctx ->
-                val previewView = PreviewView(ctx).apply {
-                    scaleType = PreviewView.ScaleType.FILL_CENTER
-                }
-                val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                cameraProviderFuture.addListener({
-                    try {
-                        val cameraProvider = cameraProviderFuture.get()
-                        val preview = Preview.Builder().build().also {
-                            it.setSurfaceProvider(previewView.surfaceProvider)
-                        }
-                        val selector = if (isLensFront == "FRONT") {
-                            CameraSelector.DEFAULT_FRONT_CAMERA
-                        } else {
-                            CameraSelector.DEFAULT_BACK_CAMERA
-                        }
-                        cameraProvider.unbindAll()
-                        cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview)
-                    } catch (e: Exception) {
-                        // ignore if permissions are missing or no camera hardware exists
-                    }
-                }, ContextCompat.getMainExecutor(ctx))
-                previewView
-            },
-            modifier = Modifier
-                .size(1.dp) // kept microscopically tiny so Emulator stock image overlay shows beautiful simulation scenes
-                .align(Alignment.BottomEnd)
         )
     }
 }
@@ -2402,7 +2392,7 @@ fun AiEditingStudioOverlay(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(16.dp)
-                        .blur(if (localBlurPx > 0) localBlurPx.dp else 0.dp)
+                        .then(if (localBlurPx > 0) Modifier.blur(localBlurPx.dp) else Modifier)
                 ) {
                     AsyncImage(
                         model = media.uriPath,
