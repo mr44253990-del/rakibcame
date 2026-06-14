@@ -13,7 +13,9 @@ data class CustomCommand(
     val resolution: String = "1080P", // 4K, 1080P, 720P
     val frameRate: Int = 30, // 30, 60
     val stabilization: Boolean = false,
-    val isSystem: Boolean = false
+    val isSystem: Boolean = false,
+    val zoomLevel: Float = 1.0f,
+    val actionType: String = "PHOTO" // PHOTO or VIDEO
 )
 
 @Entity(tableName = "captured_media")
