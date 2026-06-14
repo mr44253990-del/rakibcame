@@ -13,6 +13,12 @@ import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.*
 
+data class DetectedObjectData(
+    val label: String,
+    val bounds: android.graphics.Rect,
+    val confidence: Float
+)
+
 // Simulated bounding box data structure for offline object detection
 data class SimulatedTarget(
     val label: String,
@@ -71,6 +77,13 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     val assistantBubble = MutableStateFlow("Ready for voice action.")
     val audioListeningState = MutableStateFlow("Idle") // Idle, Listening...
     val shutterTimer = MutableStateFlow(0) // 0, 3, 10
+    val isFlashEnabled = MutableStateFlow(false)
+    val detectedObjectResults = MutableStateFlow<List<DetectedObjectData>>(emptyList())
+
+    // --------------------------------------------------
+    // 3.5 ML Kit Components
+    // --------------------------------------------------
+    private val actionSound = android.media.MediaActionSound()
 
     // List of pre-configured beautiful scenes to cycle through for simulation/real demonstration
     val scenes = listOf(
@@ -363,12 +376,13 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     toggleCameraLens()
                 }
                 normalized.contains("flash on") || normalized.contains("ফ্ল্যাশ অন") || normalized.contains("ফ্ল্যাশ চালু") -> {
-                    CameraGlobals.cameraControl?.enableTorch(true)
-                    speakNow("Camera flashlight active.")
+                    isFlashEnabled.value = true
+                    speakNow("Camera flashlight active for next capture.")
                 }
                 normalized.contains("flash off") || normalized.contains("ফ্ল্যাশ অফ") || normalized.contains("ফ্ল্যাশ বন্ধ") -> {
+                    isFlashEnabled.value = false
                     CameraGlobals.cameraControl?.enableTorch(false)
-                    speakNow("Camera flashlight switched off.")
+                    speakNow("Camera flashlight disabled.")
                 }
                 normalized.contains("timer 3") || normalized.contains("৩ সেকেন্ড") -> {
                     shutterTimer.value = 3
@@ -409,20 +423,26 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private suspend fun executeCustomCommand(custom: CustomCommand) {
         currentCameraLens.value = custom.cameraSelection
         currentCameraMode.value = custom.filterType
+        zoomLevel.value = custom.zoomLevel
+        CameraGlobals.cameraControl?.setZoomRatio(custom.zoomLevel)
 
         speakNow("Custom Routine Triggered: ${custom.phrase}. Initiating ${custom.timerSeconds} second self-timer.")
 
         if (custom.timerSeconds > 0) {
             for (i in custom.timerSeconds downTo 1) {
-                speakNow("timer $i...")
+                speakNow("$i")
                 delay(1000)
             }
         }
 
-        capturePhoto(
-            overrideMode = custom.filterType,
-            overrideResolution = custom.resolution
-        )
+        if (custom.actionType == "VIDEO") {
+            startVideo()
+        } else {
+            capturePhoto(
+                overrideMode = custom.filterType,
+                overrideResolution = custom.resolution
+            )
+        }
     }
 
     // --------------------------------------------------
@@ -438,12 +458,22 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             if (delaySeconds > 0) {
                 for (i in delaySeconds downTo 1) {
-                    speakNow("taking photo in $i...")
+                    speakNow("$i") // Tts sound for timer
+                    // Play a tick sound if possible or just use TTS
                     delay(1000)
                 }
+                actionSound.play(android.media.MediaActionSound.START_VIDEO_RECORDING) // Use as a beep
             }
             
-            speakNow("Taking picture...")
+            // Flash Trigger logic
+            if (isFlashEnabled.value) {
+                CameraGlobals.cameraControl?.enableTorch(true)
+                delay(200) // wait a bit for brightness
+            }
+            
+            speakNow("Capturing...")
+            actionSound.play(android.media.MediaActionSound.SHUTTER_CLICK)
+
             val context = getApplication<Application>()
             val format = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
             val dateStr = format.format(Date())
@@ -467,26 +497,30 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 androidx.core.content.ContextCompat.getMainExecutor(context),
                 object : androidx.camera.core.ImageCapture.OnImageSavedCallback {
                     override fun onImageSaved(outputFileResults: androidx.camera.core.ImageCapture.OutputFileResults) {
+                        if (isFlashEnabled.value) {
+                            CameraGlobals.cameraControl?.enableTorch(false)
+                        }
                         val uri = outputFileResults.savedUri?.toString() ?: ""
                         viewModelScope.launch {
                             val activeScene = activeScene.value
-                            val detected = if (activeScene.name == "Garden") "Trees, Plants, Flowers"
-                                           else if (activeScene.name == "City") "Buildings, Cars, People"
-                                           else if (activeScene.name == "Studio") "Person, Fashion, Studio"
-                                           else "Objects, Indoors, Furniture"
+                            val detectedLabels = detectedObjectResults.value.joinToString(", ") { it.label }
+                            val aiSummary = if (detectedLabels.isNotEmpty()) "Detected: $detectedLabels" else "Scene: ${activeScene.name}"
                             val newMedia = CapturedMedia(
                                 name = fileName,
-                                uriPath = uri, // Real Camera Media URI!
+                                uriPath = uri,
                                 isVideo = false,
-                                detectedObjects = detected,
+                                detectedObjects = if (detectedLabels.isNotEmpty()) detectedLabels else "Camera Scene",
                                 detectedScene = activeScene.name
                             )
                             repository.insertMedia(newMedia)
-                            speakNow("Photo captured. AI detected: $detected")
+                            speakNow("Photo saved. $aiSummary")
                         }
                     }
                     override fun onError(exception: androidx.camera.core.ImageCaptureException) {
-                        speakNow("Failed to capture: ${exception.message}")
+                        if (isFlashEnabled.value) {
+                            CameraGlobals.cameraControl?.enableTorch(false)
+                        }
+                        speakNow("Capture error: ${exception.message}")
                     }
                 }
             )
@@ -591,7 +625,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     // --------------------------------------------------
     // Room custom voice command inserts/deletes
     // --------------------------------------------------
-    fun addCustomCommand(phrase: String, camera: String, timer: Int, filter: String, resolution: String, stabilization: Boolean) {
+    fun addCustomCommand(phrase: String, camera: String, timer: Int, filter: String, resolution: String, stabilization: Boolean, zoom: Float, action: String) {
         viewModelScope.launch {
             val element = CustomCommand(
                 phrase = phrase,
@@ -600,6 +634,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 filterType = filter,
                 resolution = resolution,
                 stabilization = stabilization,
+                zoomLevel = zoom,
+                actionType = action,
                 isSystem = false
             )
             repository.insertCustomCommand(element)

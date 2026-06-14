@@ -669,13 +669,25 @@ fun CameraViewfinder(
                                 }
                                 
                                 val imageCapture = androidx.camera.core.ImageCapture.Builder().build()
+                                
+                                // NEW: Object Detection Analyzer
+                                val analyzer = ObjectDetectionAnalyzer { results ->
+                                    viewModel.detectedObjectResults.value = results
+                                }
+                                val imageAnalyzer = androidx.camera.core.ImageAnalysis.Builder()
+                                    .setBackpressureStrategy(androidx.camera.core.ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                                    .build()
+                                    .also {
+                                        it.setAnalyzer(ContextCompat.getMainExecutor(previewView.context), analyzer)
+                                    }
+
                                 val recorder = androidx.camera.video.Recorder.Builder()
                                     .setQualitySelector(androidx.camera.video.QualitySelector.from(androidx.camera.video.Quality.HIGHEST, androidx.camera.video.FallbackStrategy.lowerQualityOrHigherThan(androidx.camera.video.Quality.SD)))
                                     .build()
                                 val videoCapture = androidx.camera.video.VideoCapture.withOutput(recorder)
 
                                 cameraProvider.unbindAll()
-                                val camera = cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, imageCapture, videoCapture)
+                                val camera = cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, imageCapture, imageAnalyzer, videoCapture)
                                 
                                 CameraGlobals.cameraControl = camera.cameraControl
                                 CameraGlobals.imageCapture = imageCapture
@@ -800,138 +812,41 @@ fun LiveAiTrackerOverlay(
 ) {
     val isAiActive by viewModel.isAiDetectionActive.collectAsState()
     val activeSceneItem by viewModel.activeScene.collectAsState()
+    val detectedObjects by viewModel.detectedObjectResults.collectAsState()
 
     if (!isAiActive) return
-
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-    val gridOutlinePulse by infiniteTransition.animateFloat(
-        initialValue = 0.5f,
-        targetValue = 0.9f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1200, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulse"
-    )
-
-    Canvas(modifier = modifier.fillMaxSize()) {
-        val w = size.width
-        val h = size.height
-
-        // Draw animated target tracker meshes over each simulated entity object
-        for (target in activeSceneItem.objects) {
-            val elementLeft = target.left * w
-            val elementTop = target.top * h
-            val elementRight = target.right * w
-            val elementBottom = target.bottom * h
-
-            val boxWidth = elementRight - elementLeft
-            val boxHeight = elementBottom - elementTop
-
-            val targetColor = if (target.label == "Smile (Detected)" || target.label.contains("Eye")) LedGreen else GoldMuted
-
-            // Draw corner braces (mechanical brackets)
-            val braceLength = (boxWidth * 0.15f).coerceAtMost(30f)
-            val strokeWidthPx = 2.dp.toPx()
-
-            // Top Left Bracket
-            drawLine(
-                color = targetColor,
-                start = Offset(elementLeft, elementTop),
-                end = Offset(elementLeft + braceLength, elementTop),
-                strokeWidth = strokeWidthPx
-            )
-            drawLine(
-                color = targetColor,
-                start = Offset(elementLeft, elementTop),
-                end = Offset(elementLeft, elementTop + braceLength),
-                strokeWidth = strokeWidthPx
-            )
-
-            // Top Right Bracket
-            drawLine(
-                color = targetColor,
-                start = Offset(elementRight, elementTop),
-                end = Offset(elementRight - braceLength, elementTop),
-                strokeWidth = strokeWidthPx
-            )
-            drawLine(
-                color = targetColor,
-                start = Offset(elementRight, elementTop),
-                end = Offset(elementRight, elementTop + braceLength),
-                strokeWidth = strokeWidthPx
-            )
-
-            // Bottom Left Bracket
-            drawLine(
-                color = targetColor,
-                start = Offset(elementLeft, elementBottom),
-                end = Offset(elementLeft + braceLength, elementBottom),
-                strokeWidth = strokeWidthPx
-            )
-            drawLine(
-                color = targetColor,
-                start = Offset(elementLeft, elementBottom),
-                end = Offset(elementLeft, elementBottom - braceLength),
-                strokeWidth = strokeWidthPx
-            )
-
-            // Bottom Right Bracket
-            drawLine(
-                color = targetColor,
-                start = Offset(elementRight, elementBottom),
-                end = Offset(elementRight - braceLength, elementBottom),
-                strokeWidth = strokeWidthPx
-            )
-            drawLine(
-                color = targetColor,
-                start = Offset(elementRight, elementBottom),
-                end = Offset(elementRight, elementBottom - braceLength),
-                strokeWidth = strokeWidthPx
-            )
-
-            // Connect subtle translucent containment background
-            drawRect(
-                color = targetColor.copy(alpha = 0.08f),
-                topLeft = Offset(elementLeft, elementTop),
-                size = Size(boxWidth, boxHeight)
-            )
+    
+    // UI drawing for both simulated targets and REAL ML Kit detections
+    Box(modifier = modifier.fillMaxSize()) {
+        // 1. Real Detections from ML Kit
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            detectedObjects.forEach { obj ->
+                // Note: Coordinates might need scaling if preview != image size
+                // For simplicity, we just draw what we get
+                drawRect(
+                    color = LedGreen.copy(alpha = 0.3f),
+                    topLeft = Offset(obj.bounds.left.toFloat(), obj.bounds.top.toFloat()),
+                    size = Size(obj.bounds.width().toFloat(), obj.bounds.height().toFloat()),
+                    style = Stroke(width = 2.dp.toPx())
+                )
+            }
         }
-    }
-
-    // Lay HTML/Text label cards perfectly mapped above each coordinate
-    Box(modifier = Modifier.fillMaxSize()) {
-        for (target in activeSceneItem.objects) {
-            val targetColor = if (target.label == "Smile (Detected)" || target.label.contains("Eye")) LedGreen else GoldMuted
+        
+        // 2. Labels for Real Detections
+        detectedObjects.forEach { obj ->
             Box(
                 modifier = Modifier
-                    .offset(
-                        x = (target.left * 100).dp * 5.2f, // scaled approximation for landscape layouts
-                        y = (target.top * 100).dp * 2.8f
-                    )
+                    .offset(x = obj.bounds.left.dp, y = obj.bounds.top.dp)
                     .clip(RoundedCornerShape(4.dp))
-                    .background(CharcoalGlass.copy(alpha = 0.85f))
-                    .border(BorderStroke(0.5.dp, targetColor.copy(alpha = 0.6f)), RoundedCornerShape(4.dp))
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                    .background(CharcoalGlass)
+                    .padding(4.dp)
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(6.dp)
-                            .clip(CircleShape)
-                            .background(targetColor)
-                    )
-                    Text(
-                        text = "${target.label} [${(target.confidence * 100).toInt()}%]",
-                        color = Color.White,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace
-                    )
-                }
+                Text(
+                    text = "${obj.label} ${(obj.confidence * 100).toInt()}%",
+                    color = LedGreen,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace
+                )
             }
         }
     }
@@ -1026,6 +941,31 @@ fun DslrHudTopBar(
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace
+                    )
+                }
+
+                // Shutter Sound & Flash Segment
+                val isFlashOn by viewModel.isFlashEnabled.collectAsState()
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    IconButton(
+                        onClick = { viewModel.isFlashEnabled.value = !isFlashOn },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isFlashOn) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                            contentDescription = "Flash",
+                            tint = if (isFlashOn) GoldMuted else Color.LightGray,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Text(
+                        text = if (isFlashOn) "FLASH AUTO" else "FLASH OFF",
+                        color = if (isFlashOn) GoldMuted else Color.Gray,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
                     )
                 }
 
@@ -2204,6 +2144,8 @@ fun CustomCommandsPanel(
     var selectTimer by remember { mutableStateOf(3) }
     var selectedFilter by remember { mutableStateOf("BEAUTY") }
     var selectedRes by remember { mutableStateOf("1080P") }
+    var selectedAction by remember { mutableStateOf("PHOTO") }
+    var selectedZoom by remember { mutableStateOf(1.0f) }
 
     Box(
         modifier = modifier
@@ -2244,6 +2186,42 @@ fun CustomCommandsPanel(
                         unfocusedBorderColor = Color.DarkGray
                     )
                 )
+
+                // Action Type & Zoom Selector Choice Grid
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    // Action toggle
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("ACTION TYPE", color = Color.Gray, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            listOf("PHOTO", "VIDEO").forEach { action ->
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(if (selectedAction == action) GoldMuted else Color(0x0EFFFFFF))
+                                        .clickable { selectedAction = action }
+                                        .padding(vertical = 6.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(action, color = if (selectedAction == action) Color.Black else Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+
+                    // Zoom level
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("ZOOM LEVEL: ${String.format("%.1f", selectedZoom)}x", color = Color.Gray, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                        Slider(
+                            value = selectedZoom,
+                            onValueChange = { selectedZoom = it },
+                            valueRange = 1.0f..10.0f,
+                            colors = SliderDefaults.colors(thumbColor = GoldMuted, activeTrackColor = GoldMuted)
+                        )
+                    }
+                }
 
                 // Lens & Timer Choice Grid
                 Row(
@@ -2345,7 +2323,9 @@ fun CustomCommandsPanel(
                                 timer = selectTimer,
                                 filter = selectedFilter,
                                 resolution = selectedRes,
-                                stabilization = true
+                                stabilization = true,
+                                zoom = selectedZoom,
+                                action = selectedAction
                             )
                             textPhrase = ""
                         }
