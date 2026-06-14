@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.compose.ui.graphics.graphicsLayer
 import coil.compose.AsyncImage
 import com.example.data.CapturedMedia
 import com.example.data.CustomCommand
@@ -642,87 +643,131 @@ fun CameraViewfinder(
                 .fillMaxSize()
                 .then(if (visualBlurAmount > 0) Modifier.blur(visualBlurAmount.dp) else Modifier)
         ) {
-            AndroidView(
-                factory = { ctx ->
-                    val previewView = PreviewView(ctx).apply {
-                        scaleType = PreviewView.ScaleType.FILL_CENTER
-                    }
-                    previewView
-                },
-                update = { previewView ->
-                    // Rebind only when lens changes
-                    val cameraProviderFuture = ProcessCameraProvider.getInstance(previewView.context)
-                    cameraProviderFuture.addListener({
-                        try {
-                            val cameraProvider = cameraProviderFuture.get()
-                            
-                            val selector = if (isLensFront == "FRONT") {
-                                CameraSelector.DEFAULT_FRONT_CAMERA
-                            } else {
-                                CameraSelector.DEFAULT_BACK_CAMERA
-                            }
-                            
-                            val preview = Preview.Builder().build().also {
-                                it.setSurfaceProvider(previewView.surfaceProvider)
-                            }
-                            
-                            val imageCapture = androidx.camera.core.ImageCapture.Builder().build()
-                            val recorder = androidx.camera.video.Recorder.Builder()
-                                .setQualitySelector(androidx.camera.video.QualitySelector.from(androidx.camera.video.Quality.HIGHEST, androidx.camera.video.FallbackStrategy.lowerQualityOrHigherThan(androidx.camera.video.Quality.SD)))
-                                .build()
-                            val videoCapture = androidx.camera.video.VideoCapture.withOutput(recorder)
-
-                            cameraProvider.unbindAll()
-                            val camera = cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, imageCapture, videoCapture)
-                            
-                            CameraGlobals.cameraControl = camera.cameraControl
-                            CameraGlobals.imageCapture = imageCapture
-                            CameraGlobals.videoCapture = videoCapture
-                            
-                            // Re-apply states
-                            CameraGlobals.cameraControl?.setZoomRatio(zoomValue)
-                        } catch (e: Throwable) {
-                            // ignore
+            key(isLensFront) {
+                AndroidView(
+                    factory = { ctx ->
+                        val previewView = PreviewView(ctx).apply {
+                            scaleType = PreviewView.ScaleType.FILL_CENTER
                         }
-                    }, ContextCompat.getMainExecutor(previewView.context))
-                },
+                        previewView
+                    },
+                    update = { previewView ->
+                        // Rebind only when lens changes
+                        val cameraProviderFuture = ProcessCameraProvider.getInstance(previewView.context)
+                        cameraProviderFuture.addListener({
+                            try {
+                                val cameraProvider = cameraProviderFuture.get()
+                                
+                                val selector = if (isLensFront == "FRONT") {
+                                    CameraSelector.DEFAULT_FRONT_CAMERA
+                                } else {
+                                    CameraSelector.DEFAULT_BACK_CAMERA
+                                }
+                                
+                                val preview = Preview.Builder().build().also {
+                                    it.setSurfaceProvider(previewView.surfaceProvider)
+                                }
+                                
+                                val imageCapture = androidx.camera.core.ImageCapture.Builder().build()
+                                val recorder = androidx.camera.video.Recorder.Builder()
+                                    .setQualitySelector(androidx.camera.video.QualitySelector.from(androidx.camera.video.Quality.HIGHEST, androidx.camera.video.FallbackStrategy.lowerQualityOrHigherThan(androidx.camera.video.Quality.SD)))
+                                    .build()
+                                val videoCapture = androidx.camera.video.VideoCapture.withOutput(recorder)
+
+                                cameraProvider.unbindAll()
+                                val camera = cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, imageCapture, videoCapture)
+                                
+                                CameraGlobals.cameraControl = camera.cameraControl
+                                CameraGlobals.imageCapture = imageCapture
+                                CameraGlobals.videoCapture = videoCapture
+                                
+                                // Re-apply states
+                                CameraGlobals.cameraControl?.setZoomRatio(zoomValue)
+                            } catch (e: Throwable) {
+                                // ignore
+                            }
+                        }, ContextCompat.getMainExecutor(previewView.context))
+                    },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .drawWithContent {
+                            drawContent()
+                            // Drawing professional alignment grid lines
+                            val verticalThree = size.width / 3
+                            val horizontalThree = size.height / 3
+                            drawLine(
+                                color = Color(0x3FF6F6F6),
+                                start = Offset(verticalThree, 0f),
+                                end = Offset(verticalThree, size.height),
+                                strokeWidth = 0.5.dp.toPx()
+                            )
+                            drawLine(
+                                color = Color(0x3FF6F6F6),
+                                start = Offset(verticalThree * 2, 0f),
+                                end = Offset(verticalThree * 2, size.height),
+                                strokeWidth = 0.5.dp.toPx()
+                            )
+                            drawLine(
+                                color = Color(0x3FF6F6F6),
+                                start = Offset(0f, horizontalThree),
+                                end = Offset(size.width, horizontalThree),
+                                strokeWidth = 0.5.dp.toPx()
+                            )
+                            drawLine(
+                                color = Color(0x3FF6F6F6),
+                                start = Offset(0f, horizontalThree * 2),
+                                end = Offset(size.width, horizontalThree * 2),
+                                strokeWidth = 0.5.dp.toPx()
+                            )
+                        }
+                )
+            }
+        }
+
+        // Portrait Mode Depth-of-Field Simulation
+        val activeMode by viewModel.currentCameraMode.collectAsState()
+        if (activeMode == "Portrait") {
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .drawWithContent {
-                        drawContent()
-                        // Drawing professional alignment grid lines
-                        val verticalThree = size.width / 3
-                        val horizontalThree = size.height / 3
-                        drawLine(
-                            color = Color(0x3FF6F6F6),
-                            start = Offset(verticalThree, 0f),
-                            end = Offset(verticalThree, size.height),
-                            strokeWidth = 0.5.dp.toPx()
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.4f)),
+                            radius = 600f
                         )
-                        drawLine(
-                            color = Color(0x3FF6F6F6),
-                            start = Offset(verticalThree * 2, 0f),
-                            end = Offset(verticalThree * 2, size.height),
-                            strokeWidth = 0.5.dp.toPx()
-                        )
-                        drawLine(
-                            color = Color(0x3FF6F6F6),
-                            start = Offset(0f, horizontalThree),
-                            end = Offset(size.width, horizontalThree),
-                            strokeWidth = 0.5.dp.toPx()
-                        )
-                        drawLine(
-                            color = Color(0x3FF6F6F6),
-                            start = Offset(0f, horizontalThree * 2),
-                            end = Offset(size.width, horizontalThree * 2),
-                            strokeWidth = 0.5.dp.toPx()
-                        )
-                    }
+                    )
+            )
+            // Center focus circle
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(240.dp)
+                    .border(1.dp, LedGreen.copy(alpha = 0.4f), CircleShape)
             )
         }
 
+        // Smart Horizon Level Indicator
+        val horizonAngle by viewModel.horizonAngle.collectAsState()
+        Box(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .size(200.dp, 2.dp)
+                .graphicsLayer { rotationZ = horizonAngle }
+                .background(
+                    Brush.horizontalGradient(
+                        colors = listOf(Color.Transparent, LedGreen.copy(alpha = 0.8f), Color.Transparent)
+                    )
+                )
+        )
+        // Center mark
+        Box(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .size(10.dp)
+                .border(1.dp, Color.White.copy(alpha = 0.5f), CircleShape)
+        )
+
         // Camera mode visual filters and overlays
-        val activeMode by viewModel.currentCameraMode.collectAsState()
         if (activeMode == "Night") {
             Box(
                 modifier = Modifier
@@ -949,8 +994,35 @@ fun DslrHudTopBar(
                         modifier = Modifier.size(16.dp)
                     )
                     Text(
-                        text = if (listeningState != "Idle") "DICTATING" else "OFFLINE ENG",
-                        color = if (listeningState != "Idle") LedRed else Color.LightGray,
+                        text = if (listeningState != "Idle") "DICTATING" else "AUTO-LISTEN ON",
+                        color = if (listeningState != "Idle") LedRed else LedGreen,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+
+                // AI Neural Heartbeat
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    val transition = rememberInfiniteTransition(label = "pulse")
+                    val pulseScale by transition.animateFloat(
+                        initialValue = 1f,
+                        targetValue = 1.3f,
+                        animationSpec = infiniteRepeatable(tween(1000), RepeatMode.Reverse),
+                        label = "pulse"
+                    )
+                    Icon(
+                        imageVector = Icons.Default.Favorite,
+                        contentDescription = "Neural Heartbeat",
+                        tint = LedRed,
+                        modifier = Modifier.size(12.dp).graphicsLayer { scaleX = pulseScale; scaleY = pulseScale }
+                    )
+                    Text(
+                        text = "SYNC-OK",
+                        color = Color.LightGray,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace
@@ -1974,7 +2046,7 @@ fun AppGalleryPanel(
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        items(filteredList) { media ->
+                        items(filteredList, key = { it.id }) { media ->
                             Box(
                                 modifier = Modifier
                                     .aspectRatio(1f)

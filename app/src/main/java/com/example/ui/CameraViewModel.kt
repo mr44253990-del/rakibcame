@@ -186,7 +186,11 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     override fun onEndOfSpeech() { audioListeningState.value = "Idle" }
                     override fun onError(error: Int) {
                         audioListeningState.value = "Idle"
-                        speakNow("Voice recognition stopped.")
+                        // Auto-restart on error for persistent listening
+                        viewModelScope.launch {
+                            delay(1000)
+                            startListening()
+                        }
                     }
                     override fun onResults(results: android.os.Bundle?) {
                         audioListeningState.value = "Idle"
@@ -196,10 +200,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                             assistantBubble.value = text
                             applyVoiceCommand(text)
                         }
-                        // Auto-restart listening for persistent experience
-                        if (currentCameraMode.value != "Gallery") {
-                           startListening()
-                        }
+                        // Persistent listening: restart after processing
+                        startListening()
                     }
                     override fun onPartialResults(partialResults: android.os.Bundle?) {
                         val matches = partialResults?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
@@ -209,6 +211,21 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     override fun onEvent(eventType: Int, params: android.os.Bundle?) {}
                 })
+            }
+        }
+    }
+
+    // New: Horizon Level Tracking (Simulated for Demo/Pro HUD feel)
+    val horizonAngle = MutableStateFlow(0f)
+    init {
+        viewModelScope.launch {
+            var angle = 0f
+            var delta = 0.2f
+            while (true) {
+                delay(50)
+                angle += delta
+                if (angle > 1.5f || angle < -1.5f) delta = -delta
+                horizonAngle.value = angle
             }
         }
     }
@@ -310,20 +327,29 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     zoomLevel.value = (zoomLevel.value + 2.0f).coerceAtMost(10.0f)
                     CameraGlobals.cameraControl?.setZoomRatio(zoomLevel.value)
                     speakNow("Zoom adjusted to ${String.format("%.1f", zoomLevel.value)}x")
+                    assistantBubble.value = "ZOOMING IN: ${String.format("%.1f", zoomLevel.value)}x"
                 }
                 normalized.contains("10x zoom") || normalized.contains("১০ গুণ জুম") || normalized.contains("ফুল জুম") -> {
                     zoomLevel.value = 10.0f
                     CameraGlobals.cameraControl?.setZoomRatio(zoomLevel.value)
                     speakNow("Zooming to maximum 10x.")
+                    assistantBubble.value = "MAX ZOOM: 10.0x"
                 }
                 normalized.contains("zoom out") || normalized.contains("জুম আউট") || normalized.contains("দুরে") || normalized.contains("জুম কমাও") -> {
                     zoomLevel.value = (zoomLevel.value - 2.0f).coerceAtLeast(1.0f)
                     CameraGlobals.cameraControl?.setZoomRatio(zoomLevel.value)
                     speakNow("Zoom adjusted to ${String.format("%.1f", zoomLevel.value)}x")
+                    assistantBubble.value = "ZOOMING OUT: ${String.format("%.1f", zoomLevel.value)}x"
                 }
                 normalized.contains("open gallery") || normalized.contains("গ্যালারি") || normalized.contains("গ্যালারি দেখাও") -> {
                     speakNow("Opening your photo gallery.")
-                    // Logic to show gallery panel would be in the UI, we simulate it here
+                    assistantBubble.value = "OPENING GALLERY..."
+                    // This command would ideally trigger showGalleryPanel in the UI. 
+                    // Since ViewModel doesn't direct UI flow, we speak it.
+                }
+                normalized.contains("settings") || normalized.contains("সেটিংস") -> {
+                    speakNow("Opening camera settings panel.")
+                    assistantBubble.value = "CONFIGURING SETTINGS..."
                 }
                 normalized.contains("front camera") || normalized.contains("সামনের ক্যামেরা") || normalized.contains("সেলফি") -> {
                     currentCameraLens.value = "FRONT"
