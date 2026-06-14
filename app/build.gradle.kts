@@ -112,4 +112,6 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
+  implementation("com.google.mlkit:object-detection:17.0.2")
+  implementation("com.google.mlkit:image-labeling:17.0.9")
 }
