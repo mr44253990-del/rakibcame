@@ -557,8 +557,22 @@ fun CameraViewfinder(
                             } else {
                                 CameraSelector.DEFAULT_BACK_CAMERA
                             }
+                            
+                            val imageCapture = androidx.camera.core.ImageCapture.Builder().build()
+                            val recorder = androidx.camera.video.Recorder.Builder()
+                                .setQualitySelector(androidx.camera.video.QualitySelector.from(androidx.camera.video.Quality.HIGHEST, androidx.camera.video.FallbackStrategy.lowerQualityOrHigherThan(androidx.camera.video.Quality.SD)))
+                                .build()
+                            val videoCapture = androidx.camera.video.VideoCapture.withOutput(recorder)
+
                             cameraProvider.unbindAll()
-                            cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview)
+                            val camera = cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, imageCapture, videoCapture)
+                            
+                            CameraGlobals.cameraControl = camera.cameraControl
+                            CameraGlobals.imageCapture = imageCapture
+                            CameraGlobals.videoCapture = videoCapture
+                            
+                            // Setup features
+                            CameraGlobals.cameraControl?.setZoomRatio(zoomValue)
                         } catch (e: Throwable) {
                             // ignore if permissions are missing or no camera hardware exists
                         }
@@ -1312,8 +1326,12 @@ fun RightSideQuickButtons(
             }
 
             // Speech HUD trigger helper
+            val context = LocalContext.current
             IconButton(
-                onClick = onShowVoiceHelp,
+                onClick = { 
+                    viewModel.initializeSpeechRecognizer(context)
+                    viewModel.startListening()
+                },
                 modifier = Modifier
                     .clip(CircleShape)
                     .background(GoldMuted.copy(alpha = 0.2f))

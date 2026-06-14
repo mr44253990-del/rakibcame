@@ -161,6 +161,69 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     val isCartoonEffectActive = MutableStateFlow(false)
     val objectRemoveMode = MutableStateFlow(false) // Toggle draw to erase
 
+    // Voice listening
+    private var speechRecognizer: android.speech.SpeechRecognizer? = null
+    private var recognizerIntent: android.content.Intent? = null
+
+    fun initializeSpeechRecognizer(context: android.content.Context) {
+        if (speechRecognizer != null) return
+        val mainExecutor = androidx.core.content.ContextCompat.getMainExecutor(context)
+        mainExecutor.execute {
+            if (android.speech.SpeechRecognizer.isRecognitionAvailable(context)) {
+                speechRecognizer = android.speech.SpeechRecognizer.createSpeechRecognizer(context)
+                recognizerIntent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                    putExtra(android.speech.RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                }
+                speechRecognizer?.setRecognitionListener(object : android.speech.RecognitionListener {
+                    override fun onReadyForSpeech(params: android.os.Bundle?) { audioListeningState.value = "Listening..." }
+                    override fun onBeginningOfSpeech() {}
+                    override fun onRmsChanged(rmsdB: Float) {}
+                    override fun onBufferReceived(buffer: ByteArray?) {}
+                    override fun onEndOfSpeech() { audioListeningState.value = "Idle" }
+                    override fun onError(error: Int) {
+                        audioListeningState.value = "Idle"
+                        speakNow("Voice recognition stopped.")
+                    }
+                    override fun onResults(results: android.os.Bundle?) {
+                        audioListeningState.value = "Idle"
+                        val matches = results?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
+                        if (!matches.isNullOrEmpty()) {
+                            val text = matches[0]
+                            assistantBubble.value = text
+                            applyVoiceCommand(text)
+                        }
+                    }
+                    override fun onPartialResults(partialResults: android.os.Bundle?) {
+                        val matches = partialResults?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
+                        if (!matches.isNullOrEmpty()) {
+                            assistantBubble.value = matches[0]
+                        }
+                    }
+                    override fun onEvent(eventType: Int, params: android.os.Bundle?) {}
+                })
+            }
+        }
+    }
+
+    fun startListening() {
+        val intent = recognizerIntent ?: return
+        val mainExecutor = androidx.core.content.ContextCompat.getMainExecutor(getApplication())
+        mainExecutor.execute {
+            speechRecognizer?.startListening(intent)
+            audioListeningState.value = "Listening..."
+        }
+    }
+
+    fun stopListening() {
+        val mainExecutor = androidx.core.content.ContextCompat.getMainExecutor(getApplication())
+        mainExecutor.execute {
+            speechRecognizer?.stopListening()
+            audioListeningState.value = "Idle"
+        }
+    }
+
     // --------------------------------------------------
     // 6. Speech / Voice System Setup
     // --------------------------------------------------
@@ -233,12 +296,14 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 normalized.contains("resume video") -> {
                     resumeVideo()
                 }
-                normalized.contains("zoom in") -> {
+                normalized.contains("zoom in") || normalized.contains("জুম ইন") -> {
                     zoomLevel.value = (zoomLevel.value + 1.5f).coerceAtMost(10.0f)
+                    CameraGlobals.cameraControl?.setZoomRatio(zoomLevel.value)
                     speakNow("Zoom ratio adjusted to ${String.format("%.1f", zoomLevel.value)}x")
                 }
-                normalized.contains("zoom out") -> {
+                normalized.contains("zoom out") || normalized.contains("জুম আউট") -> {
                     zoomLevel.value = (zoomLevel.value - 1.5f).coerceAtLeast(1.0f)
+                    CameraGlobals.cameraControl?.setZoomRatio(zoomLevel.value)
                     speakNow("Zoom ratio adjusted to ${String.format("%.1f", zoomLevel.value)}x")
                 }
                 normalized.contains("front camera") -> {
@@ -249,10 +314,12 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     currentCameraLens.value = "BACK"
                     speakNow("Back camera enabled.")
                 }
-                normalized.contains("flash on") -> {
+                normalized.contains("flash on") || normalized.contains("ফ্ল্যাশ অন") || normalized.contains("ফ্ল্যাশ চালু") -> {
+                    CameraGlobals.cameraControl?.enableTorch(true)
                     speakNow("Camera flashlight active.")
                 }
-                normalized.contains("flash off") -> {
+                normalized.contains("flash off") || normalized.contains("ফ্ল্যাশ অফ") || normalized.contains("ফ্ল্যাশ বন্ধ") -> {
+                    CameraGlobals.cameraControl?.enableTorch(false)
                     speakNow("Camera flashlight switched off.")
                 }
                 normalized.contains("night mode") -> {
@@ -302,33 +369,108 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     // Core Actions: Capture, Record
     // --------------------------------------------------
     fun capturePhoto(overrideMode: String? = null, overrideResolution: String? = null) {
-        viewModelScope.launch {
-            speakNow("Taking picture... hold steady.")
-            delay(400) // Simulated capture shutter lag
-
-            val format = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
-            val dateStr = format.format(Date())
-            val scene = activeScene.value
-
-            val newPhotoIndex = (galleryMedia.value.size + 1)
-            val newMedia = CapturedMedia(
-                name = "IMG_${dateStr}_$newPhotoIndex.jpg",
-                uriPath = scene.imagePath, // bind to current active scenery image as preview
-                isVideo = false,
-                detectedObjects = scene.objects.joinToString(", ") { it.label },
-                detectedScene = scene.name
-            )
-
-            repository.insertMedia(newMedia)
-            speakNow("Photo captured successfully in ${overrideResolution ?: "UltraHD 4K"}. AI label: ${newMedia.detectedObjects}")
+        val capture = CameraGlobals.imageCapture
+        if (capture == null) {
+            speakNow("Camera hardware not ready.")
+            return
         }
+        viewModelScope.launch { speakNow("Taking picture...") }
+        val context = getApplication<Application>()
+        val format = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
+        val dateStr = format.format(Date())
+        val fileName = "IMG_${dateStr}.jpg"
+
+        val contentValues = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            if (android.os.Build.VERSION.SDK_INT > android.os.Build.VERSION_CODES.P) {
+                put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Camera")
+            }
+        }
+        val outputOptions = androidx.camera.core.ImageCapture.OutputFileOptions.Builder(
+            context.contentResolver,
+            android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            contentValues
+        ).build()
+
+        capture.takePicture(
+            outputOptions,
+            androidx.core.content.ContextCompat.getMainExecutor(context),
+            object : androidx.camera.core.ImageCapture.OnImageSavedCallback {
+                override fun onImageSaved(outputFileResults: androidx.camera.core.ImageCapture.OutputFileResults) {
+                    val uri = outputFileResults.savedUri?.toString() ?: ""
+                    viewModelScope.launch {
+                        val newMedia = CapturedMedia(
+                            name = fileName,
+                            uriPath = uri, // Real Camera Media URI!
+                            isVideo = false,
+                            detectedObjects = "Real Picture",
+                            detectedScene = "CameraX"
+                        )
+                        repository.insertMedia(newMedia)
+                        speakNow("Photo saved to gallery successfully.")
+                    }
+                }
+                override fun onError(exception: androidx.camera.core.ImageCaptureException) {
+                    speakNow("Failed to capture: ${exception.message}")
+                }
+            }
+        )
     }
 
     fun startVideo() {
         if (isRecordingVideo.value) return
+        val capture = CameraGlobals.videoCapture
+        if (capture == null) {
+            speakNow("Video hardware not ready.")
+            return
+        }
+        val context = getApplication<Application>()
+        val format = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
+        val dateStr = format.format(Date())
+        val fileName = "VID_${dateStr}.mp4"
+
+        val contentValues = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
+            if (android.os.Build.VERSION.SDK_INT > android.os.Build.VERSION_CODES.P) {
+                put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Movies/Camera")
+            }
+        }
+        val outputOptions = androidx.camera.video.MediaStoreOutputOptions.Builder(
+            context.contentResolver,
+            android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        ).setContentValues(contentValues).build()
+
+        if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            val pendingRecording = capture.output.prepareRecording(context, outputOptions).withAudioEnabled()
+            CameraGlobals.activeRecording = pendingRecording.start(androidx.core.content.ContextCompat.getMainExecutor(context)) { event ->
+                when (event) {
+                    is androidx.camera.video.VideoRecordEvent.Finalize -> {
+                        val uri = event.outputResults.outputUri.toString()
+                        viewModelScope.launch {
+                            val newMedia = CapturedMedia(
+                                name = fileName,
+                                uriPath = uri,
+                                isVideo = true,
+                                detectedObjects = "Real Video",
+                                detectedScene = "CameraX",
+                                fileSizeBytes = event.outputResults.outputUri.hashCode().toLong()
+                            )
+                            repository.insertMedia(newMedia)
+                            speakNow("Video saved to gallery.")
+                        }
+                        CameraGlobals.activeRecording = null
+                    }
+                }
+            }
+        } else {
+            speakNow("Microphone permission missing for video.")
+            return
+        }
+
         viewModelScope.launch {
             speakNow("Starting cinematic video recording.")
-            isRecordingVideo.value = true
             isRecordingVideo.value = true
             videoDurationSeconds.value = 0
             isVideoPaused.value = false
@@ -337,36 +479,25 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     fun pauseVideo() {
         if (!isRecordingVideo.value || isVideoPaused.value) return
+        CameraGlobals.activeRecording?.pause()
         isVideoPaused.value = true
         speakNow("Recording paused.")
     }
 
     fun resumeVideo() {
         if (!isRecordingVideo.value || !isVideoPaused.value) return
+        CameraGlobals.activeRecording?.resume()
         isVideoPaused.value = false
         speakNow("Recording resumed.")
     }
 
     fun stopVideo() {
         if (!isRecordingVideo.value) return
+        CameraGlobals.activeRecording?.stop()
         viewModelScope.launch {
             isRecordingVideo.value = false
             val duration = videoDurationSeconds.value
-            speakNow("Video captured. Total duration: $duration seconds.")
-
-            val format = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
-            val dateStr = format.format(Date())
-            val scene = activeScene.value
-
-            val newMedia = CapturedMedia(
-                name = "VID_${dateStr}.mp4",
-                uriPath = scene.imagePath,
-                isVideo = true,
-                detectedObjects = scene.objects.joinToString(", ") { it.label },
-                detectedScene = scene.name,
-                fileSizeBytes = duration.toLong() * 1024 * 512 + 1024 * 100 // size scaling with duration
-            )
-            repository.insertMedia(newMedia)
+            speakNow("Video captured.")
         }
     }
 
