@@ -8,7 +8,8 @@ import com.example.data.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import java.io.File
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -69,6 +70,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     val activeGesture = MutableStateFlow("None") // Thumbs Up, Palm, Two Fingers, Swipe L, Swipe R
     val assistantBubble = MutableStateFlow("Ready for voice action.")
     val audioListeningState = MutableStateFlow("Idle") // Idle, Listening...
+    val shutterTimer = MutableStateFlow(0) // 0, 3, 10
 
     // List of pre-configured beautiful scenes to cycle through for simulation/real demonstration
     val scenes = listOf(
@@ -194,6 +196,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                             assistantBubble.value = text
                             applyVoiceCommand(text)
                         }
+                        // Auto-restart listening for persistent experience
+                        if (currentCameraMode.value != "Gallery") {
+                           startListening()
+                        }
                     }
                     override fun onPartialResults(partialResults: android.os.Bundle?) {
                         val matches = partialResults?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
@@ -249,6 +255,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun speakNow(message: String) {
+        if (isRecordingVideo.value) {
+            assistantBubble.value = message
+            return 
+        }
         assistantBubble.value = message
         tts?.speak(message, TextToSpeech.QUEUE_FLUSH, null, null)
     }
@@ -281,38 +291,50 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
             // Fallback to core system commands
             when {
-                normalized.contains("take picture") || normalized.contains("capture") || normalized.contains("ছবি") -> {
-                    capturePhoto()
+                normalized.contains("take picture") || normalized.contains("capture") || normalized.contains("ছবি") || normalized.contains("পিকচার") -> {
+                    capturePhoto(delaySeconds = shutterTimer.value)
                 }
-                normalized.contains("start video") || normalized.contains("ভিডিও শুরু") -> {
+                normalized.contains("start video") || normalized.contains("ভিডিও শুরু") || normalized.contains("ভিডিও রেকর্ড") -> {
                     startVideo()
                 }
-                normalized.contains("stop video") || normalized.contains("ভিডিও বন্ধ") -> {
+                normalized.contains("stop video") || normalized.contains("ভিডিও বন্ধ") || normalized.contains("ভিডিও সেভ") -> {
                     stopVideo()
                 }
-                normalized.contains("pause video") -> {
+                normalized.contains("pause video") || normalized.contains("ভিডিও বিরতি") -> {
                     pauseVideo()
                 }
-                normalized.contains("resume video") -> {
+                normalized.contains("resume video") || normalized.contains("ভিডিও পুনরায়") -> {
                     resumeVideo()
                 }
-                normalized.contains("zoom in") || normalized.contains("জুম ইন") -> {
-                    zoomLevel.value = (zoomLevel.value + 1.5f).coerceAtMost(10.0f)
+                normalized.contains("zoom in") || normalized.contains("জুম ইন") || normalized.contains("কাছে") || normalized.contains("জুম করো") -> {
+                    zoomLevel.value = (zoomLevel.value + 2.0f).coerceAtMost(10.0f)
                     CameraGlobals.cameraControl?.setZoomRatio(zoomLevel.value)
-                    speakNow("Zoom ratio adjusted to ${String.format("%.1f", zoomLevel.value)}x")
+                    speakNow("Zoom adjusted to ${String.format("%.1f", zoomLevel.value)}x")
                 }
-                normalized.contains("zoom out") || normalized.contains("জুম আউট") -> {
-                    zoomLevel.value = (zoomLevel.value - 1.5f).coerceAtLeast(1.0f)
+                normalized.contains("10x zoom") || normalized.contains("১০ গুণ জুম") || normalized.contains("ফুল জুম") -> {
+                    zoomLevel.value = 10.0f
                     CameraGlobals.cameraControl?.setZoomRatio(zoomLevel.value)
-                    speakNow("Zoom ratio adjusted to ${String.format("%.1f", zoomLevel.value)}x")
+                    speakNow("Zooming to maximum 10x.")
                 }
-                normalized.contains("front camera") -> {
+                normalized.contains("zoom out") || normalized.contains("জুম আউট") || normalized.contains("দুরে") || normalized.contains("জুম কমাও") -> {
+                    zoomLevel.value = (zoomLevel.value - 2.0f).coerceAtLeast(1.0f)
+                    CameraGlobals.cameraControl?.setZoomRatio(zoomLevel.value)
+                    speakNow("Zoom adjusted to ${String.format("%.1f", zoomLevel.value)}x")
+                }
+                normalized.contains("open gallery") || normalized.contains("গ্যালারি") || normalized.contains("গ্যালারি দেখাও") -> {
+                    speakNow("Opening your photo gallery.")
+                    // Logic to show gallery panel would be in the UI, we simulate it here
+                }
+                normalized.contains("front camera") || normalized.contains("সামনের ক্যামেরা") || normalized.contains("সেলফি") -> {
                     currentCameraLens.value = "FRONT"
                     speakNow("Front camera enabled.")
                 }
-                normalized.contains("back camera") -> {
+                normalized.contains("back camera") || normalized.contains("পেছনের ক্যামেরা") -> {
                     currentCameraLens.value = "BACK"
                     speakNow("Back camera enabled.")
+                }
+                normalized.contains("switch camera") || normalized.contains("ক্যামেরা পরিবর্তন") || normalized.contains("ক্যামেরা চেঞ্জ") -> {
+                    toggleCameraLens()
                 }
                 normalized.contains("flash on") || normalized.contains("ফ্ল্যাশ অন") || normalized.contains("ফ্ল্যাশ চালু") -> {
                     CameraGlobals.cameraControl?.enableTorch(true)
@@ -321,6 +343,18 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 normalized.contains("flash off") || normalized.contains("ফ্ল্যাশ অফ") || normalized.contains("ফ্ল্যাশ বন্ধ") -> {
                     CameraGlobals.cameraControl?.enableTorch(false)
                     speakNow("Camera flashlight switched off.")
+                }
+                normalized.contains("timer 3") || normalized.contains("৩ সেকেন্ড") -> {
+                    shutterTimer.value = 3
+                    speakNow("Shutter timer set to 3 seconds.")
+                }
+                normalized.contains("timer 10") || normalized.contains("১০ সেকেন্ড") -> {
+                    shutterTimer.value = 10
+                    speakNow("Shutter timer set to 10 seconds.")
+                }
+                normalized.contains("timer off") || normalized.contains("টাইমার বন্ধ") -> {
+                    shutterTimer.value = 0
+                    speakNow("Shutter timer disabled.")
                 }
                 normalized.contains("night mode") -> {
                     currentCameraMode.value = "Night"
@@ -368,55 +402,72 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     // --------------------------------------------------
     // Core Actions: Capture, Record
     // --------------------------------------------------
-    fun capturePhoto(overrideMode: String? = null, overrideResolution: String? = null) {
+    fun capturePhoto(overrideMode: String? = null, overrideResolution: String? = null, delaySeconds: Int = 0) {
         val capture = CameraGlobals.imageCapture
         if (capture == null) {
             speakNow("Camera hardware not ready.")
             return
         }
-        viewModelScope.launch { speakNow("Taking picture...") }
-        val context = getApplication<Application>()
-        val format = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
-        val dateStr = format.format(Date())
-        val fileName = "IMG_${dateStr}.jpg"
-
-        val contentValues = android.content.ContentValues().apply {
-            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-            if (android.os.Build.VERSION.SDK_INT > android.os.Build.VERSION_CODES.P) {
-                put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Camera")
+        
+        viewModelScope.launch {
+            if (delaySeconds > 0) {
+                for (i in delaySeconds downTo 1) {
+                    speakNow("taking photo in $i...")
+                    delay(1000)
+                }
             }
-        }
-        val outputOptions = androidx.camera.core.ImageCapture.OutputFileOptions.Builder(
-            context.contentResolver,
-            android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            contentValues
-        ).build()
+            
+            speakNow("Taking picture...")
+            val context = getApplication<Application>()
+            val format = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
+            val dateStr = format.format(Date())
+            val fileName = "IMG_${dateStr}.jpg"
 
-        capture.takePicture(
-            outputOptions,
-            androidx.core.content.ContextCompat.getMainExecutor(context),
-            object : androidx.camera.core.ImageCapture.OnImageSavedCallback {
-                override fun onImageSaved(outputFileResults: androidx.camera.core.ImageCapture.OutputFileResults) {
-                    val uri = outputFileResults.savedUri?.toString() ?: ""
-                    viewModelScope.launch {
-                        val newMedia = CapturedMedia(
-                            name = fileName,
-                            uriPath = uri, // Real Camera Media URI!
-                            isVideo = false,
-                            detectedObjects = "Real Picture",
-                            detectedScene = "CameraX"
-                        )
-                        repository.insertMedia(newMedia)
-                        speakNow("Photo saved to gallery successfully.")
+            val contentValues = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                if (android.os.Build.VERSION.SDK_INT > android.os.Build.VERSION_CODES.P) {
+                    put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Camera")
+                }
+            }
+            val outputOptions = androidx.camera.core.ImageCapture.OutputFileOptions.Builder(
+                context.contentResolver,
+                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                contentValues
+            ).build()
+
+            capture.takePicture(
+                outputOptions,
+                androidx.core.content.ContextCompat.getMainExecutor(context),
+                object : androidx.camera.core.ImageCapture.OnImageSavedCallback {
+                    override fun onImageSaved(outputFileResults: androidx.camera.core.ImageCapture.OutputFileResults) {
+                        val uri = outputFileResults.savedUri?.toString() ?: ""
+                        viewModelScope.launch {
+                            val activeScene = activeScene.value
+                            val detected = if (activeScene.name == "Garden") "Trees, Plants, Flowers"
+                                           else if (activeScene.name == "City") "Buildings, Cars, People"
+                                           else if (activeScene.name == "Studio") "Person, Fashion, Studio"
+                                           else "Objects, Indoors, Furniture"
+                            val newMedia = CapturedMedia(
+                                name = fileName,
+                                uriPath = uri, // Real Camera Media URI!
+                                isVideo = false,
+                                detectedObjects = detected,
+                                detectedScene = activeScene.name
+                            )
+                            repository.insertMedia(newMedia)
+                            speakNow("Photo captured. AI detected: $detected")
+                        }
+                    }
+                    override fun onError(exception: androidx.camera.core.ImageCaptureException) {
+                        speakNow("Failed to capture: ${exception.message}")
                     }
                 }
-                override fun onError(exception: androidx.camera.core.ImageCaptureException) {
-                    speakNow("Failed to capture: ${exception.message}")
-                }
-            }
-        )
+            )
+        }
     }
+
+    private var recordingJob: Job? = null
 
     fun startVideo() {
         if (isRecordingVideo.value) return
@@ -461,6 +512,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                             speakNow("Video saved to gallery.")
                         }
                         CameraGlobals.activeRecording = null
+                        this@CameraViewModel.recordingJob?.cancel()
+                        isRecordingVideo.value = false
                     }
                 }
             }
@@ -474,6 +527,16 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
             isRecordingVideo.value = true
             videoDurationSeconds.value = 0
             isVideoPaused.value = false
+            
+            recordingJob?.cancel()
+            this@CameraViewModel.recordingJob = launch {
+                while (isRecordingVideo.value) {
+                    delay(1000)
+                    if (!isVideoPaused.value) {
+                        videoDurationSeconds.value++
+                    }
+                }
+            }
         }
     }
 
@@ -494,11 +557,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     fun stopVideo() {
         if (!isRecordingVideo.value) return
         CameraGlobals.activeRecording?.stop()
-        viewModelScope.launch {
-            isRecordingVideo.value = false
-            val duration = videoDurationSeconds.value
-            speakNow("Video captured.")
-        }
+        this@CameraViewModel.recordingJob?.cancel()
+        isRecordingVideo.value = false
+        speakNow("Video captured.")
     }
 
     // --------------------------------------------------

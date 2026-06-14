@@ -36,6 +36,7 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -81,7 +82,7 @@ val LedGreen = Color(0xFF4CAF50)
 val LedRed = Color(0xFFF44336)
 val HUDTransparent = Color(0x7F101010)
 
-@OptIn(ExperimentalPermissionsApi::class)
+@OptIn(ExperimentalPermissionsApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun CameraHomeScreen(
     viewModel: CameraViewModel,
@@ -151,6 +152,40 @@ fun CameraHomeScreen(
             // LAYOUT LAYER 3: Translucent Heads-Up Display (HUD Controls + Bars)
             // -----------------------------------------------------------------------------------------
             DslrHudTopBar(viewModel = viewModel)
+
+            // Video Recording Timer (Flashy indicator)
+            val isRecording by viewModel.isRecordingVideo.collectAsState()
+            val recordDuration by viewModel.videoDurationSeconds.collectAsState()
+            
+            if (isRecording) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 80.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(Color.Black.copy(alpha = 0.6f))
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(LedRed)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        val minutes = recordDuration / 60
+                        val seconds = recordDuration % 60
+                        Text(
+                            text = String.format("%02d:%02d", minutes, seconds),
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
 
             // DSLR Dial & Adjustments Column (Left Side)
             LeftDslrControlDrawer(
@@ -266,6 +301,38 @@ fun CameraHomeScreen(
                         .fillMaxSize()
                         .background(Color.White.copy(alpha = flashAlpha))
                 )
+            }
+
+            // LAST MEDIA THUMBNAIL PREVIEW
+            val galleryMedia by viewModel.galleryMedia.collectAsState()
+            val lastMedia = galleryMedia.lastOrNull()
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(bottom = 32.dp, end = 32.dp)
+                    .size(60.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .border(2.dp, Color.White, RoundedCornerShape(12.dp))
+                    .clickable { showGalleryPanel = true },
+                contentAlignment = Alignment.Center
+            ) {
+                if (lastMedia != null) {
+                    androidx.compose.foundation.Image(
+                        painter = coil.compose.rememberAsyncImagePainter(lastMedia.uriPath),
+                        contentDescription = "Last captured",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Collections,
+                        contentDescription = "Gallery",
+                        tint = Color.White.copy(alpha = 0.5f),
+                        modifier = Modifier.size(30.dp)
+                    )
+                }
             }
         }
     }
@@ -479,6 +546,38 @@ fun CameraViewfinder(
     val exposureValue by viewModel.exposureCompensation.collectAsState()
     val activeSceneItem by viewModel.activeScene.collectAsState()
     val isLensFront by viewModel.currentCameraLens.collectAsState()
+    val shutterTimerValue by viewModel.shutterTimer.collectAsState()
+    
+    // Auto-start persistent voice assistant
+    LaunchedEffect(Unit) {
+        viewModel.initializeSpeechRecognizer(context)
+        viewModel.startListening()
+    }
+
+    // Volume key listener for shutter
+    val view = androidx.compose.ui.platform.LocalView.current
+    DisposableEffect(view) {
+        val listener = android.view.View.OnKeyListener { _, keyCode, event ->
+            if (event.action == android.view.KeyEvent.ACTION_DOWN) {
+                if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP || keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN) {
+                    viewModel.capturePhoto(delaySeconds = shutterTimerValue)
+                    return@OnKeyListener true
+                }
+            }
+            false
+        }
+        view.isFocusableInTouchMode = true
+        view.requestFocus()
+        view.setOnKeyListener(listener)
+        onDispose {
+            view.setOnKeyListener(null)
+        }
+    }
+
+    // Control zoom via CameraControl instead of rebinding
+    LaunchedEffect(zoomValue) {
+        CameraGlobals.cameraControl?.setZoomRatio(zoomValue)
+    }
 
     // Base Blur configuration based on Manual Focus selector
     val visualBlurAmount = if (focusValue < 0.9f) {
@@ -522,6 +621,12 @@ fun CameraViewfinder(
         modifier = modifier
             .fillMaxSize()
             .pointerInput(Unit) {
+                detectTransformGestures { _, _, zoom, _ ->
+                    val newZoom = (zoomValue * zoom).coerceIn(1.0f, 10.0f)
+                    viewModel.zoomLevel.value = newZoom
+                }
+            }
+            .pointerInput(Unit) {
                 // Handle dynamic screen touch focus clicks
                 detectTapGestures { offset ->
                     viewModel.speakNow("Manual focus lock targeted at point - X ${offset.x.toInt()} Y ${offset.y.toInt()}%")
@@ -545,17 +650,20 @@ fun CameraViewfinder(
                     previewView
                 },
                 update = { previewView ->
+                    // Rebind only when lens changes
                     val cameraProviderFuture = ProcessCameraProvider.getInstance(previewView.context)
                     cameraProviderFuture.addListener({
                         try {
                             val cameraProvider = cameraProviderFuture.get()
-                            val preview = Preview.Builder().build().also {
-                                it.setSurfaceProvider(previewView.surfaceProvider)
-                            }
+                            
                             val selector = if (isLensFront == "FRONT") {
                                 CameraSelector.DEFAULT_FRONT_CAMERA
                             } else {
                                 CameraSelector.DEFAULT_BACK_CAMERA
+                            }
+                            
+                            val preview = Preview.Builder().build().also {
+                                it.setSurfaceProvider(previewView.surfaceProvider)
                             }
                             
                             val imageCapture = androidx.camera.core.ImageCapture.Builder().build()
@@ -571,10 +679,10 @@ fun CameraViewfinder(
                             CameraGlobals.imageCapture = imageCapture
                             CameraGlobals.videoCapture = videoCapture
                             
-                            // Setup features
+                            // Re-apply states
                             CameraGlobals.cameraControl?.setZoomRatio(zoomValue)
                         } catch (e: Throwable) {
-                            // ignore if permissions are missing or no camera hardware exists
+                            // ignore
                         }
                     }, ContextCompat.getMainExecutor(previewView.context))
                 },
@@ -978,6 +1086,7 @@ fun DslrHudTopBar(
 // -----------------------------------------------------------------------------
 // Component 5: Left DSLR control drawer (ISO, Shutter, Focus wheel dials)
 // -----------------------------------------------------------------------------
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun LeftDslrControlDrawer(
     viewModel: CameraViewModel,
@@ -985,6 +1094,7 @@ fun LeftDslrControlDrawer(
     onSelectorToggled: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val shutterTimerValue by viewModel.shutterTimer.collectAsState()
     val selectedWb by viewModel.whiteBalance.collectAsState()
     val manualBlurFocus by viewModel.manualFocus.collectAsState()
     val isoRatio by viewModel.iso.collectAsState()
@@ -1038,6 +1148,14 @@ fun LeftDslrControlDrawer(
                 activeValue = if (manualBlurFocus >= 0.95f) "INF" else "${(manualBlurFocus * 10).toInt()}",
                 isSelected = activeSelector == "FOCUS",
                 onClick = { onSelectorToggled("FOCUS") }
+            )
+
+            // Timer Trigger button
+            DslrDialTriggerButton(
+                label = "TMR",
+                activeValue = if (shutterTimerValue == 0) "OFF" else "${shutterTimerValue}s",
+                isSelected = activeSelector == "TIMER",
+                onClick = { onSelectorToggled("TIMER") }
             )
 
             Divider(color = Color(0x33FFFFFF), modifier = Modifier.width(36.dp), thickness = 0.5.dp)
@@ -1186,6 +1304,32 @@ fun LeftDslrControlDrawer(
                                 }
                             }
                         }
+                        "TIMER" -> {
+                            val timerOptions = listOf(0, 3, 10)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                timerOptions.forEach { t ->
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(if (shutterTimerValue == t) GoldMuted else Color(0x1BFFFFFF))
+                                            .clickable { viewModel.shutterTimer.value = t }
+                                            .padding(vertical = 8.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = if (t == 0) "OFF" else "${t}s",
+                                            color = if (shutterTimerValue == t) Color.Black else Color.White,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1232,6 +1376,7 @@ private fun DslrDialTriggerButton(
 // -----------------------------------------------------------------------------
 // Component 6: DSLR Quick action control triggers (Right Side Column)
 // -----------------------------------------------------------------------------
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun RightSideQuickButtons(
     viewModel: CameraViewModel,
@@ -1241,6 +1386,7 @@ fun RightSideQuickButtons(
     onShowVoiceHelp: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val shutterTimerValue by viewModel.shutterTimer.collectAsState()
     val isRecording by viewModel.isRecordingVideo.collectAsState()
     val isPauseRec by viewModel.isVideoPaused.collectAsState()
     val recordDuration by viewModel.videoDurationSeconds.collectAsState()
@@ -1392,9 +1538,18 @@ fun RightSideQuickButtons(
                     modifier = Modifier
                         .size(64.dp)
                         .clip(CircleShape)
+                        .combinedClickable(
+                            onClick = { 
+                                viewModel.capturePhoto(delaySeconds = shutterTimerValue) 
+                            },
+                            onLongClick = {
+                                if (!isRecording) {
+                                    viewModel.startVideo()
+                                }
+                            }
+                        )
                         .background(Color.White)
                         .border(BorderStroke(4.dp, Color.DarkGray), CircleShape)
-                        .clickable { viewModel.capturePhoto() }
                         .testTag("photo_capture_button"),
                     contentAlignment = Alignment.Center
                 ) {
@@ -1402,7 +1557,7 @@ fun RightSideQuickButtons(
                         modifier = Modifier
                             .size(50.dp)
                             .clip(CircleShape)
-                            .background(Color.White)
+                            .background(if (isRecording) LedRed else Color.White)
                             .border(BorderStroke(1.5.dp, Color.Black), CircleShape)
                     )
                 }
