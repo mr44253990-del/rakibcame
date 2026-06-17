@@ -44,6 +44,45 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private val repository = CameraRepository(db.cameraDao())
 
     // --------------------------------------------------
+    // Persistent Settings
+    // --------------------------------------------------
+    private val prefs = application.getSharedPreferences("CameraSettings", android.content.Context.MODE_PRIVATE)
+
+    val currentLanguage = MutableStateFlow(prefs.getString("LANGUAGE", "English") ?: "English")
+    val isAutoListenEnabled = MutableStateFlow(prefs.getBoolean("AUTO_LISTEN", true))
+    val isObjectDetectionEnabled = MutableStateFlow(prefs.getBoolean("ML_OBJECT", true))
+    val isFaceDetectionEnabled = MutableStateFlow(prefs.getBoolean("ML_FACE", true))
+    val isPoseDetectionEnabled = MutableStateFlow(prefs.getBoolean("ML_POSE", true))
+    val isBarcodeScanningEnabled = MutableStateFlow(prefs.getBoolean("ML_BARCODE", true))
+
+    fun updateSetting(key: String, value: Any) {
+        val editor = prefs.edit()
+        when (value) {
+            is String -> {
+                editor.putString(key, value)
+                if (key == "LANGUAGE") {
+                    currentLanguage.value = value
+                    updateTTSLanguage()
+                    if (audioListeningState.value == "Idle" && isAutoListenEnabled.value) {
+                         startListening()
+                    }
+                }
+            }
+            is Boolean -> {
+                editor.putBoolean(key, value)
+                when (key) {
+                    "AUTO_LISTEN" -> isAutoListenEnabled.value = value
+                    "ML_OBJECT" -> isObjectDetectionEnabled.value = value
+                    "ML_FACE" -> isFaceDetectionEnabled.value = value
+                    "ML_POSE" -> isPoseDetectionEnabled.value = value
+                    "ML_BARCODE" -> isBarcodeScanningEnabled.value = value
+                }
+            }
+        }
+        editor.apply()
+    }
+
+    // --------------------------------------------------
     // 1. Reactive Database flows
     // --------------------------------------------------
     val customVoiceCommands: StateFlow<List<CustomCommand>> = repository.customCommands
@@ -199,10 +238,11 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     override fun onEndOfSpeech() { audioListeningState.value = "Idle" }
                     override fun onError(error: Int) {
                         audioListeningState.value = "Idle"
-                        // Auto-restart on error for persistent listening
-                        viewModelScope.launch {
-                            delay(1000)
-                            startListening()
+                        if (isAutoListenEnabled.value) {
+                            viewModelScope.launch {
+                                delay(1000)
+                                startListening()
+                            }
                         }
                     }
                     override fun onResults(results: android.os.Bundle?) {
@@ -213,8 +253,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                             assistantBubble.value = text
                             applyVoiceCommand(text)
                         }
-                        // Persistent listening: restart after processing
-                        startListening()
+                        if (isAutoListenEnabled.value) {
+                            startListening()
+                        }
                     }
                     override fun onPartialResults(partialResults: android.os.Bundle?) {
                         val matches = partialResults?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
@@ -265,11 +306,19 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     // --------------------------------------------------
     private var tts: TextToSpeech? = null
 
+    private fun updateTTSLanguage() {
+        val locale = if (currentLanguage.value == "Bengali") Locale("bn", "BD") else Locale.US
+        tts?.language = locale
+        recognizerIntent?.putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, locale)
+        recognizerIntent?.putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, locale.toString())
+    }
+
     init {
         tts = TextToSpeech(application) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                tts?.language = Locale.ENGLISH
-                speakNow("rakibcame online. Landscape camera ready.")
+                updateTTSLanguage()
+                val welcome = if (currentLanguage.value == "Bengali") "ক্যামেরা প্রস্তুত।" else "Camera ready."
+                speakNow(welcome)
             }
         }
 

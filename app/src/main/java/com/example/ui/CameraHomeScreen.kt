@@ -103,9 +103,21 @@ fun CameraHomeScreen(
     var showCustomCommandsPanel by remember { mutableStateOf(false) }
     var showAllGesturesHelp by remember { mutableStateOf(false) }
     var showVoiceHelp by remember { mutableStateOf(false) }
+    var showSettingsPanel by remember { mutableStateOf(false) }
 
     // Quick Selectors in Left DSLR Drawer
     var activeManualModeSelector by remember { mutableStateOf("") } // "ISO", "SHUTTER", "WB", "FOCUS", ""
+
+    // Voice control integration for UI panels
+    val assistantBubble by viewModel.assistantBubble.collectAsState()
+    LaunchedEffect(assistantBubble) {
+        if (assistantBubble == "OPENING GALLERY...") {
+            showGalleryPanel = true
+        } else if (assistantBubble == "CONFIGURING SETTINGS...") {
+            showSettingsPanel = true
+            viewModel.speakNow(if (viewModel.currentLanguage.value == "Bengali") "সেটিংস খোলা হয়েছে।" else "Settings opened.")
+        }
+    }
 
     if (!hasPermissions) {
         // Startup splash permissions flow view
@@ -130,12 +142,13 @@ fun CameraHomeScreen(
                 .background(Color.Black)
         ) {
             // BACK KEY handling to dismiss open panels first
-            BackHandler(enabled = showGalleryPanel || showCustomCommandsPanel || viewModel.selectedMediaItem.value != null || viewModel.activeEditingItem.value != null) {
+            BackHandler(enabled = showGalleryPanel || showCustomCommandsPanel || showSettingsPanel || viewModel.selectedMediaItem.value != null || viewModel.activeEditingItem.value != null) {
                 when {
                     viewModel.activeEditingItem.value != null -> viewModel.activeEditingItem.value = null
                     viewModel.selectedMediaItem.value != null -> viewModel.selectedMediaItem.value = null
                     showGalleryPanel -> showGalleryPanel = false
                     showCustomCommandsPanel -> showCustomCommandsPanel = false
+                    showSettingsPanel -> showSettingsPanel = false
                 }
             }
 
@@ -201,6 +214,7 @@ fun CameraHomeScreen(
                 modifier = Modifier.align(Alignment.CenterEnd),
                 onToggleGallery = { showGalleryPanel = !showGalleryPanel },
                 onToggleCustomCommands = { showCustomCommandsPanel = !showCustomCommandsPanel },
+                onToggleSettings = { showSettingsPanel = !showSettingsPanel },
                 onShowGesturesHelp = { showAllGesturesHelp = true },
                 onShowVoiceHelp = { showVoiceHelp = true }
             )
@@ -240,7 +254,20 @@ fun CameraHomeScreen(
                 )
             }
 
-            // 3. AI Photo Details Modal Dialog
+            // 3. Settings Panel
+            AnimatedVisibility(
+                visible = showSettingsPanel,
+                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(), // From Right
+                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
+                modifier = Modifier.fillMaxHeight().width(320.dp).align(Alignment.CenterEnd)
+            ) {
+                AppSettingsPanel(
+                    viewModel = viewModel,
+                    onDismiss = { showSettingsPanel = false }
+                )
+            }
+
+            // 4. AI Photo Details Modal Dialog
             viewModel.selectedMediaItem.value?.let { selectedItem ->
                 PhotoDetailOverlay(
                     media = selectedItem,
@@ -671,7 +698,7 @@ fun CameraViewfinder(
                                 val imageCapture = androidx.camera.core.ImageCapture.Builder().build()
                                 
                                 // NEW: Object Detection Analyzer
-                                val analyzer = ObjectDetectionAnalyzer { results ->
+                                val analyzer = ObjectDetectionAnalyzer(viewModel) { results ->
                                     viewModel.detectedObjectResults.value = results
                                 }
                                 val imageAnalyzer = androidx.camera.core.ImageAnalysis.Builder()
@@ -1394,6 +1421,7 @@ fun RightSideQuickButtons(
     viewModel: CameraViewModel,
     onToggleGallery: () -> Unit,
     onToggleCustomCommands: () -> Unit,
+    onToggleSettings: () -> Unit,
     onShowGesturesHelp: () -> Unit,
     onShowVoiceHelp: () -> Unit,
     modifier: Modifier = Modifier
@@ -1419,6 +1447,22 @@ fun RightSideQuickButtons(
                 .padding(vertical = 12.dp, horizontal = 6.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // Settings Menu Toggle
+            IconButton(
+                onClick = onToggleSettings,
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(Color(0x1BFFFFFF))
+                    .size(36.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = "Settings",
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+
             // AI Overlay on/off switch
             IconButton(
                 onClick = { viewModel.isAiDetectionActive.value = !isAiActive },
