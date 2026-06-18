@@ -7,99 +7,69 @@ import com.google.mlkit.vision.objects.ObjectDetection
 import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
 import com.google.mlkit.vision.label.ImageLabeling
 import com.google.mlkit.vision.label.defaults.ImageLabelerOptions
-import com.google.mlkit.vision.pose.PoseDetection
-import com.google.mlkit.vision.pose.defaults.PoseDetectorOptions
-import com.google.mlkit.vision.barcode.BarcodeScanning
-import com.google.mlkit.vision.face.FaceDetection
-import com.google.mlkit.vision.face.FaceDetectorOptions
-import com.google.android.gms.tasks.Task
-import com.google.android.gms.tasks.Tasks
 
 class ObjectDetectionAnalyzer(
-    private val viewModel: CameraViewModel,
     private val onObjectsDetected: (List<DetectedObjectData>) -> Unit
 ) : ImageAnalysis.Analyzer {
 
-    private val objectDetector = ObjectDetection.getClient(ObjectDetectorOptions.Builder()
+    // Object Detector with classification enabled
+    private val options = ObjectDetectorOptions.Builder()
         .setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
-        .enableMultipleObjects().enableClassification().build())
-    private val labeler = ImageLabeling.getClient(ImageLabelerOptions.DEFAULT_OPTIONS)
-    private val poseDetector = PoseDetection.getClient(PoseDetectorOptions.Builder()
-        .setDetectorMode(PoseDetectorOptions.STREAM_MODE).build())
-    private val barcodeScanner = BarcodeScanning.getClient()
-    private val faceDetector = FaceDetection.getClient(FaceDetectorOptions.Builder()
-        .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
-        .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL).build())
+        .enableMultipleObjects()
+        .enableClassification()  // Optional
+        .build()
+
+    private val objectDetector = ObjectDetection.getClient(options)
+    
+    // Also use Image Labeling for better broad category detection (Trees, Plants, etc)
+    private val labelerOptions = ImageLabelerOptions.DEFAULT_OPTIONS
+    private val labeler = ImageLabeling.getClient(labelerOptions)
 
     @androidx.camera.core.ExperimentalGetImage
     override fun analyze(imageProxy: ImageProxy) {
-        val mediaImage = imageProxy.image ?: return imageProxy.close()
-        val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
-        
-        val tasks = mutableListOf<Task<*>>()
-        val results = mutableListOf<DetectedObjectData>()
-
-        if (viewModel.isObjectDetectionEnabled.value) {
-            val t1 = objectDetector.process(image).addOnSuccessListener { detected ->
-                results.addAll(detected.map { obj ->
-                    DetectedObjectData(obj.labels.firstOrNull()?.text ?: "Object", obj.boundingBox, obj.labels.firstOrNull()?.confidence ?: 0f)
-                })
-            }
-            val t2 = labeler.process(image).addOnSuccessListener { labels ->
-                results.addAll(labels.take(2).map { label ->
-                    DetectedObjectData(label.text, android.graphics.Rect(), label.confidence)
-                })
-            }
-            tasks.add(t1)
-            tasks.add(t2)
-        }
-
-        if (viewModel.isFaceDetectionEnabled.value) {
-            val t3 = faceDetector.process(image).addOnSuccessListener { faces ->
-                results.addAll(faces.map { face ->
-                    val smileInfo = if (face.smilingProbability != null && face.smilingProbability!! > 0.5f) " (Smiling)" else ""
-                    DetectedObjectData("Face$smileInfo", face.boundingBox, face.smilingProbability ?: 1.0f)
-                })
-            }
-            tasks.add(t3)
-        }
-
-        if (viewModel.isPoseDetectionEnabled.value) {
-            val t4 = poseDetector.process(image).addOnSuccessListener { pose ->
-                // Basic check if a whole pose is found
-                if (pose.allPoseLandmarks.isNotEmpty()) {
-                    var isStanding = false
-                    // Simple logic for standing vs sitting could check hips vs ankles, but just saying "Pose" is enough for visualizer
-                    val leftShoulder = pose.getPoseLandmark(com.google.mlkit.vision.pose.PoseLandmark.LEFT_SHOULDER)
-                    var labelText = "Pose Detected"
-                    if (leftShoulder != null) {
-                        // Pose recommendation logic
-                        viewModel.activeGesture.value = "Tip: Keep arms relaxed."
+        val mediaImage = imageProxy.image
+        if (mediaImage != null) {
+            val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+            
+            // We run object detection and image labeling in parallel or sequence
+            // For simplicity and specific labels like "Trees", labeler is often better for background
+            
+            objectDetector.process(image)
+                .addOnSuccessListener { detectedObjects ->
+                    val results = detectedObjects.map { obj ->
+                        DetectedObjectData(
+                            label = obj.labels.firstOrNull()?.text ?: "Object",
+                            bounds = obj.boundingBox,
+                            confidence = obj.labels.firstOrNull()?.confidence ?: 0f
+                        )
                     }
-                    // For bounding box, we could enclose landmarks
-                    results.add(DetectedObjectData(labelText, android.graphics.Rect(), 1.0f))
+                    
+                    // If object detector has no labels, try broad image labeling
+                    if (results.all { it.label == "Object" }) {
+                        labeler.process(image)
+                            .addOnSuccessListener { labels ->
+                                val labelResults = labels.map { label ->
+                                    DetectedObjectData(
+                                        label = label.text,
+                                        bounds = android.graphics.Rect(), // No bounds for entire image labels
+                                        confidence = label.confidence
+                                    )
+                                }
+                                onObjectsDetected(labelResults.take(3))
+                            }
+                            .addOnCompleteListener {
+                                imageProxy.close()
+                            }
+                    } else {
+                        onObjectsDetected(results)
+                        imageProxy.close()
+                    }
                 }
-            }
-            tasks.add(t4)
-        }
-
-        if (viewModel.isBarcodeScanningEnabled.value) {
-            val t5 = barcodeScanner.process(image).addOnSuccessListener { barcodes ->
-                results.addAll(barcodes.map { barcode ->
-                    DetectedObjectData("Barcode: ${barcode.rawValue}", barcode.boundingBox ?: android.graphics.Rect(), 1.0f)
-                })
-            }
-            tasks.add(t5)
-        }
-
-        if (tasks.isEmpty()) {
-            imageProxy.close()
-            onObjectsDetected(emptyList())
+                .addOnFailureListener {
+                    imageProxy.close()
+                }
         } else {
-            Tasks.whenAllComplete(tasks).addOnCompleteListener {
-                onObjectsDetected(results)
-                imageProxy.close()
-            }
+            imageProxy.close()
         }
     }
 }
