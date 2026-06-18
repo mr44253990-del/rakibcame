@@ -24,6 +24,7 @@ data class CapturedMedia(
     val name: String, // e.g. "IMG_20260612_102030.jpg"
     val uriPath: String, // Simulated or actual file URI/Path
     val isVideo: Boolean = false,
+    val isPanorama: Boolean = false, // 360/VR Panorama
     val timestamp: Long = System.currentTimeMillis(),
     val detectedObjects: String = "", // Comma-separated list for Offline AI Search, e.g., "Person, Dog, Coffee"
     val detectedScene: String = "Auto", // Scene: Sunset, Food, Landscape, Night, Sky, etc.

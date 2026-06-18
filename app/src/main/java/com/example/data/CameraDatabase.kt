@@ -8,7 +8,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
-@Database(entities = [CustomCommand::class, CapturedMedia::class], version = 1, exportSchema = false)
+@Database(entities = [CustomCommand::class, CapturedMedia::class], version = 2, exportSchema = false)
 abstract class CameraDatabase : RoomDatabase() {
 
     abstract fun cameraDao(): CameraDao
@@ -36,7 +36,29 @@ abstract class CameraDatabase : RoomDatabase() {
                     )
                     dao.insertCustomCommand(
                         CustomCommand(
+                            phrase = "রাকিব সেলফি",
+                            cameraSelection = "FRONT",
+                            timerSeconds = 3,
+                            filterType = "BEAUTY",
+                            resolution = "1080P",
+                            isSystem = true
+                        )
+                    )
+                    dao.insertCustomCommand(
+                        CustomCommand(
                             phrase = "cinematic video",
+                            cameraSelection = "BACK",
+                            timerSeconds = 0,
+                            filterType = "CINEMATIC",
+                            resolution = "4K",
+                            frameRate = 60,
+                            stabilization = true,
+                            isSystem = true
+                        )
+                    )
+                    dao.insertCustomCommand(
+                        CustomCommand(
+                            phrase = "সিনেমাটিক ভিডিও",
                             cameraSelection = "BACK",
                             timerSeconds = 0,
                             filterType = "CINEMATIC",
@@ -55,6 +77,17 @@ abstract class CameraDatabase : RoomDatabase() {
                             resolution = "1080P",
                             frameRate = 60,
                             stabilization = true,
+                            isSystem = true
+                        )
+                    )
+                    dao.insertCustomCommand(
+                        CustomCommand(
+                            phrase = "জুম বাড়াও",
+                            cameraSelection = "BACK",
+                            timerSeconds = 0,
+                            filterType = "BEAUTY",
+                            resolution = "1080P",
+                            zoomLevel = 4.0f,
                             isSystem = true
                         )
                     )
