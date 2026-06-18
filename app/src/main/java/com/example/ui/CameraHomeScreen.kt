@@ -671,7 +671,7 @@ fun CameraViewfinder(
                                 val imageCapture = androidx.camera.core.ImageCapture.Builder().build()
                                 
                                 // NEW: Object Detection Analyzer
-                                val analyzer = ObjectDetectionAnalyzer { results ->
+                                val analyzer = ObjectDetectionAnalyzer(viewModel) { results ->
                                     viewModel.detectedObjectResults.value = results
                                 }
                                 val imageAnalyzer = androidx.camera.core.ImageAnalysis.Builder()
