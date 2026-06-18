@@ -44,6 +44,65 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private val repository = CameraRepository(db.cameraDao())
 
     // --------------------------------------------------
+    // Persistent Settings
+    // --------------------------------------------------
+    private val prefs = application.getSharedPreferences("CameraSettings", android.content.Context.MODE_PRIVATE)
+
+    val currentLanguage = MutableStateFlow(prefs.getString("LANGUAGE", "English") ?: "English")
+    val isAutoListenEnabled = MutableStateFlow(prefs.getBoolean("AUTO_LISTEN", true))
+    val isObjectDetectionEnabled = MutableStateFlow(prefs.getBoolean("ML_OBJECT", true))
+    val isFaceDetectionEnabled = MutableStateFlow(prefs.getBoolean("ML_FACE", true))
+    val isPoseDetectionEnabled = MutableStateFlow(prefs.getBoolean("ML_POSE", true))
+    val isBarcodeScanningEnabled = MutableStateFlow(prefs.getBoolean("ML_BARCODE", true))
+    
+    // Virtual panning offset coordinates for camera preview
+    val panOffsetX = MutableStateFlow(0f)
+    val panOffsetY = MutableStateFlow(0f)
+    
+    // Face gesture smiling/open mouth exposure controller toggle
+    val isFaceGestureExposureEnabled = MutableStateFlow(prefs.getBoolean("FACE_GESTURE_EXPOSURE", true))
+    
+    // Live FPS and Resolution options
+    val currentFps = MutableStateFlow(prefs.getInt("CAMERA_FPS", 30))
+    val currentResolution = MutableStateFlow(prefs.getString("CAMERA_RESOLUTION", "1080P") ?: "1080P")
+
+    fun updateSetting(key: String, value: Any) {
+        val editor = prefs.edit()
+        when (value) {
+            is String -> {
+                editor.putString(key, value)
+                if (key == "LANGUAGE") {
+                    currentLanguage.value = value
+                    updateTTSLanguage()
+                    if (audioListeningState.value == "Idle" && isAutoListenEnabled.value) {
+                         startListening()
+                    }
+                } else if (key == "CAMERA_RESOLUTION") {
+                    currentResolution.value = value
+                }
+            }
+            is Boolean -> {
+                editor.putBoolean(key, value)
+                when (key) {
+                    "AUTO_LISTEN" -> isAutoListenEnabled.value = value
+                    "ML_OBJECT" -> isObjectDetectionEnabled.value = value
+                    "ML_FACE" -> isFaceDetectionEnabled.value = value
+                    "ML_POSE" -> isPoseDetectionEnabled.value = value
+                    "ML_BARCODE" -> isBarcodeScanningEnabled.value = value
+                    "FACE_GESTURE_EXPOSURE" -> isFaceGestureExposureEnabled.value = value
+                }
+            }
+            is Int -> {
+                editor.putInt(key, value)
+                if (key == "CAMERA_FPS") {
+                    currentFps.value = value
+                }
+            }
+        }
+        editor.apply()
+    }
+
+    // --------------------------------------------------
     // 1. Reactive Database flows
     // --------------------------------------------------
     val customVoiceCommands: StateFlow<List<CustomCommand>> = repository.customCommands
@@ -188,9 +247,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 speechRecognizer = android.speech.SpeechRecognizer.createSpeechRecognizer(context)
                 recognizerIntent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                     putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                    putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
                     putExtra(android.speech.RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 }
+                updateTTSLanguage() // Dynamic initial Locale based on saved settings (Bengali or English)
                 speechRecognizer?.setRecognitionListener(object : android.speech.RecognitionListener {
                     override fun onReadyForSpeech(params: android.os.Bundle?) { audioListeningState.value = "Listening..." }
                     override fun onBeginningOfSpeech() {}
@@ -199,10 +258,11 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     override fun onEndOfSpeech() { audioListeningState.value = "Idle" }
                     override fun onError(error: Int) {
                         audioListeningState.value = "Idle"
-                        // Auto-restart on error for persistent listening
-                        viewModelScope.launch {
-                            delay(1000)
-                            startListening()
+                        if (isAutoListenEnabled.value) {
+                            viewModelScope.launch {
+                                delay(1000)
+                                startListening()
+                            }
                         }
                     }
                     override fun onResults(results: android.os.Bundle?) {
@@ -213,8 +273,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                             assistantBubble.value = text
                             applyVoiceCommand(text)
                         }
-                        // Persistent listening: restart after processing
-                        startListening()
+                        if (isAutoListenEnabled.value) {
+                            startListening()
+                        }
                     }
                     override fun onPartialResults(partialResults: android.os.Bundle?) {
                         val matches = partialResults?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
@@ -265,11 +326,19 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     // --------------------------------------------------
     private var tts: TextToSpeech? = null
 
+    private fun updateTTSLanguage() {
+        val locale = if (currentLanguage.value == "Bengali") Locale("bn", "BD") else Locale.US
+        tts?.language = locale
+        recognizerIntent?.putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, locale)
+        recognizerIntent?.putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, locale.toString())
+    }
+
     init {
         tts = TextToSpeech(application) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                tts?.language = Locale.ENGLISH
-                speakNow("rakibcame online. Landscape camera ready.")
+                updateTTSLanguage()
+                val welcome = if (currentLanguage.value == "Bengali") "ক্যামেরা প্রস্তুত।" else "Camera ready."
+                speakNow(welcome)
             }
         }
 
@@ -310,6 +379,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             delay(500) // simulated processing delay
             val normalized = phrase.trim().lowercase()
+            val isBengali = currentLanguage.value == "Bengali"
 
             // First check if it matches a registered custom voice command
             val foundCustom = customVoiceCommands.value.firstOrNull { it.phrase.trim().lowercase() == normalized }
@@ -321,99 +391,125 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
             // Fallback to core system commands
             when {
-                normalized.contains("take picture") || normalized.contains("capture") || normalized.contains("ছবি") || normalized.contains("পিকচার") -> {
+                normalized.contains("take picture") || normalized.contains("capture") || normalized.contains("ছবি") || normalized.contains("পিকচার") || normalized.contains("ক্লিক") -> {
                     capturePhoto(delaySeconds = shutterTimer.value)
                 }
-                normalized.contains("start video") || normalized.contains("ভিডিও শুরু") || normalized.contains("ভিডিও রেকর্ড") -> {
+                normalized.contains("start video") || normalized.contains("ভিডিও শুরু") || normalized.contains("ভিডিও রেকর্ড") || normalized.contains("রেকর্ড") -> {
                     startVideo()
                 }
-                normalized.contains("stop video") || normalized.contains("ভিডিও বন্ধ") || normalized.contains("ভিডিও সেভ") -> {
+                normalized.contains("stop video") || normalized.contains("ভিডিও বন্ধ") || normalized.contains("ভিডিও সেভ") || normalized.contains("স্টপ") -> {
                     stopVideo()
                 }
-                normalized.contains("pause video") || normalized.contains("ভিডিও বিরতি") -> {
+                normalized.contains("pause video") || normalized.contains("ভিডিও বিরতি") || normalized.contains("পজ") -> {
                     pauseVideo()
                 }
-                normalized.contains("resume video") || normalized.contains("ভিডিও পুনরায়") -> {
+                normalized.contains("resume video") || normalized.contains("ভিডিও পুনরায়") || normalized.contains("রিসিউম") -> {
                     resumeVideo()
                 }
-                normalized.contains("zoom in") || normalized.contains("জুম ইন") || normalized.contains("কাছে") || normalized.contains("জুম করো") -> {
+                normalized.contains("zoom in") || normalized.contains("জুম ইন") || normalized.contains("কাছে") || normalized.contains("জুম করো") || normalized.contains("জুম বাড়াও") -> {
                     zoomLevel.value = (zoomLevel.value + 2.0f).coerceAtMost(10.0f)
                     CameraGlobals.cameraControl?.setZoomRatio(zoomLevel.value)
-                    speakNow("Zoom adjusted to ${String.format("%.1f", zoomLevel.value)}x")
-                    assistantBubble.value = "ZOOMING IN: ${String.format("%.1f", zoomLevel.value)}x"
+                    val zoomText = String.format("%.1f", zoomLevel.value)
+                    speakNow(if (isBengali) "জুম বাড়িয়ে $zoomText গুণ করা হয়েছে।" else "Zoom adjusted to ${zoomText}x")
+                    assistantBubble.value = "ZOOMING IN: ${zoomText}x"
                 }
                 normalized.contains("10x zoom") || normalized.contains("১০ গুণ জুম") || normalized.contains("ফুল জুম") -> {
                     zoomLevel.value = 10.0f
                     CameraGlobals.cameraControl?.setZoomRatio(zoomLevel.value)
-                    speakNow("Zooming to maximum 10x.")
+                    speakNow(if (isBengali) "সর্বোচ্চ ১০ গুণ জুম করা হয়েছে।" else "Zooming to maximum 10x.")
                     assistantBubble.value = "MAX ZOOM: 10.0x"
                 }
                 normalized.contains("zoom out") || normalized.contains("জুম আউট") || normalized.contains("দুরে") || normalized.contains("জুম কমাও") -> {
                     zoomLevel.value = (zoomLevel.value - 2.0f).coerceAtLeast(1.0f)
                     CameraGlobals.cameraControl?.setZoomRatio(zoomLevel.value)
-                    speakNow("Zoom adjusted to ${String.format("%.1f", zoomLevel.value)}x")
-                    assistantBubble.value = "ZOOMING OUT: ${String.format("%.1f", zoomLevel.value)}x"
+                    val zoomText = String.format("%.1f", zoomLevel.value)
+                    speakNow(if (isBengali) "জুম কমিয়ে $zoomText গুণ করা হয়েছে।" else "Zoom adjusted to ${zoomText}x")
+                    assistantBubble.value = "ZOOMING OUT: ${zoomText}x"
                 }
-                normalized.contains("open gallery") || normalized.contains("গ্যালারি") || normalized.contains("গ্যালারি দেখাও") -> {
-                    speakNow("Opening your photo gallery.")
+                normalized.contains("pan left") || normalized.contains("বামে যাও") || normalized.contains("বামে") -> {
+                    panOffsetX.value += 150f
+                    speakNow(if (isBengali) "ক্যামেরার ভিউ বামে সরানো হয়েছে।" else "Panning camera view left.")
+                    assistantBubble.value = "PANNING LEFT"
+                }
+                normalized.contains("pan right") || normalized.contains("ডানে যাও") || normalized.contains("ডানে") -> {
+                    panOffsetX.value -= 150f
+                    speakNow(if (isBengali) "ক্যামেরার ভিউ ডানে সরানো হয়েছে।" else "Panning camera view right.")
+                    assistantBubble.value = "PANNING RIGHT"
+                }
+                normalized.contains("pan up") || normalized.contains("ওপরে যাও") || normalized.contains("উপরে") -> {
+                    panOffsetY.value += 150f
+                    speakNow(if (isBengali) "ক্যামেরার ভিউ ওপরে সরানো হয়েছে।" else "Panning camera view up.")
+                    assistantBubble.value = "PANNING UP"
+                }
+                normalized.contains("pan down") || normalized.contains("নিচে যাও") || normalized.contains("নিচে") -> {
+                    panOffsetY.value -= 150f
+                    speakNow(if (isBengali) "ক্যামেরার ভিউ নিচে সরানো হয়েছে।" else "Panning camera view down.")
+                    assistantBubble.value = "PANNING DOWN"
+                }
+                normalized.contains("reset view") || normalized.contains("রিসেট ভিউ") || normalized.contains("রিসেট") || normalized.contains("ভিউ রিসেট") -> {
+                    panOffsetX.value = 0f
+                    panOffsetY.value = 0f
+                    speakNow(if (isBengali) "ক্যামেরা ভিউ রিসেট করা হয়েছে।" else "Camera view reset to center.")
+                    assistantBubble.value = "CAMERA VIEW RESET"
+                }
+                normalized.contains("open gallery") || normalized.contains("গ্যালারি") || normalized.contains("গ্যালারি দেখাও") || normalized.contains("গ্যালারি ওপেন") -> {
+                    speakNow(if (isBengali) "আপনার ফটো গ্যালারি খোলা হচ্ছে।" else "Opening your photo gallery.")
                     assistantBubble.value = "OPENING GALLERY..."
-                    // This command would ideally trigger showGalleryPanel in the UI. 
-                    // Since ViewModel doesn't direct UI flow, we speak it.
                 }
-                normalized.contains("settings") || normalized.contains("সেটিংস") -> {
-                    speakNow("Opening camera settings panel.")
+                normalized.contains("settings") || normalized.contains("সেটিংস") || normalized.contains("ক্যামেরা সেটিংস") -> {
+                    speakNow(if (isBengali) "ক্যামেরা সেটিংস খোলা হচ্ছে।" else "Opening camera settings panel.")
                     assistantBubble.value = "CONFIGURING SETTINGS..."
                 }
-                normalized.contains("front camera") || normalized.contains("সামনের ক্যামেরা") || normalized.contains("সেলফি") -> {
+                normalized.contains("front camera") || normalized.contains("সামনের ক্যামেরা") || normalized.contains("সেলফি") || normalized.contains("সেলফি ক্যামেরা") -> {
                     currentCameraLens.value = "FRONT"
-                    speakNow("Front camera enabled.")
+                    speakNow(if (isBengali) "সামনের ক্যামেরা চালু করা হয়েছে।" else "Front camera enabled.")
                 }
-                normalized.contains("back camera") || normalized.contains("পেছনের ক্যামেরা") -> {
+                normalized.contains("back camera") || normalized.contains("পেছনের ক্যামেরা") || normalized.contains("পেছন ক্যামেরা") -> {
                     currentCameraLens.value = "BACK"
-                    speakNow("Back camera enabled.")
+                    speakNow(if (isBengali) "পেছনের ক্যামেরা চালু করা হয়েছে।" else "Back camera enabled.")
                 }
                 normalized.contains("switch camera") || normalized.contains("ক্যামেরা পরিবর্তন") || normalized.contains("ক্যামেরা চেঞ্জ") -> {
                     toggleCameraLens()
                 }
-                normalized.contains("flash on") || normalized.contains("ফ্ল্যাশ অন") || normalized.contains("ফ্ল্যাশ চালু") -> {
+                normalized.contains("flash on") || normalized.contains("ফ্ল্যাশ অন") || normalized.contains("ফ্ল্যাশ চালু") || normalized.contains("লাইট অন") -> {
                     isFlashEnabled.value = true
-                    speakNow("Camera flashlight active for next capture.")
+                    speakNow(if (isBengali) "ফ্ল্যাশ লাইট অন করা হয়েছে।" else "Camera flashlight active for next capture.")
                 }
-                normalized.contains("flash off") || normalized.contains("ফ্ল্যাশ অফ") || normalized.contains("ফ্ল্যাশ বন্ধ") -> {
+                normalized.contains("flash off") || normalized.contains("ফ্ল্যাশ অফ") || normalized.contains("ফ্ল্যাশ বন্ধ") || normalized.contains("লাইট অফ") -> {
                     isFlashEnabled.value = false
                     CameraGlobals.cameraControl?.enableTorch(false)
-                    speakNow("Camera flashlight disabled.")
+                    speakNow(if (isBengali) "ফ্ল্যাশ লাইট অফ করা হয়েছে।" else "Camera flashlight disabled.")
                 }
-                normalized.contains("timer 3") || normalized.contains("৩ সেকেন্ড") -> {
+                normalized.contains("timer 3") || normalized.contains("৩ সেকেন্ড") || normalized.contains("টাইমার ৩") -> {
                     shutterTimer.value = 3
-                    speakNow("Shutter timer set to 3 seconds.")
+                    speakNow(if (isBengali) "শাটার টাইমার ৩ সেকেন্ড করা হয়েছে।" else "Shutter timer set to 3 seconds.")
                 }
-                normalized.contains("timer 10") || normalized.contains("১০ সেকেন্ড") -> {
+                normalized.contains("timer 10") || normalized.contains("১০ সেকেন্ড") || normalized.contains("টাইমার ১০") -> {
                     shutterTimer.value = 10
-                    speakNow("Shutter timer set to 10 seconds.")
+                    speakNow(if (isBengali) "শাটার টাইমার ১০ সেকেন্ড করা হয়েছে।" else "Shutter timer set to 10 seconds.")
                 }
                 normalized.contains("timer off") || normalized.contains("টাইমার বন্ধ") -> {
                     shutterTimer.value = 0
-                    speakNow("Shutter timer disabled.")
+                    speakNow(if (isBengali) "শাটার টাইমার বন্ধ করা হয়েছে।" else "Shutter timer disabled.")
                 }
-                normalized.contains("night mode") -> {
+                normalized.contains("night mode") || normalized.contains("নাইট মোড") || normalized.contains("রাতের মোড") -> {
                     currentCameraMode.value = "Night"
-                    speakNow("DSLR Night mode loaded. Shutter expanded.")
+                    speakNow(if (isBengali) "নাইট মোড লোড করা হয়েছে।" else "DSLR Night mode loaded. Shutter expanded.")
                 }
-                normalized.contains("portrait mode") -> {
+                normalized.contains("portrait mode") || normalized.contains("পোর্ট্রেট মোড") -> {
                     currentCameraMode.value = "Portrait"
-                    speakNow("Lens configuration set to 50mm portrait blur.")
+                    speakNow(if (isBengali) "পোর্ট্রেট মোড লোড করা হয়েছে।" else "Lens configuration set to 50mm portrait blur.")
                 }
-                normalized.contains("increase brightness") -> {
+                normalized.contains("increase brightness") || normalized.contains("আলো বাড়াও") || normalized.contains("ব্রাইটনেস বাড়াও") || normalized.contains("ব্রাইটনেস বৃদ্ধি") -> {
                     exposureCompensation.value = (exposureCompensation.value + 1.0f).coerceAtMost(3.0f)
-                    speakNow("Exposure level boosted.")
+                    speakNow(if (isBengali) "ব্রাইটনেস বাড়ানো হয়েছে।" else "Exposure level boosted.")
                 }
-                normalized.contains("reduce brightness") -> {
+                normalized.contains("reduce brightness") || normalized.contains("আলো কমাও") || normalized.contains("ব্রাইটনেস কমাও") || normalized.contains("ব্রাইটনেস হ্রাস") -> {
                     exposureCompensation.value = (exposureCompensation.value - 1.0f).coerceAtLeast(-3.0f)
-                    speakNow("Exposure level dimmed.")
+                    speakNow(if (isBengali) "ব্রাইটনেস কমানো হয়েছে।" else "Exposure level dimmed.")
                 }
                 else -> {
-                    speakNow("Voice phrase unrecognized. Add it to Custom Commands panel.")
+                    speakNow(if (isBengali) "ভয়েস কমান্ডটি বুঝতে পারিনি। সেটিংস থেকে কাস্টম করে নিতে পারেন।" else "Voice phrase unrecognized. Add it to Custom Commands panel.")
                 }
             }
             audioListeningState.value = "Idle"
