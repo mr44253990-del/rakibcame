@@ -103,9 +103,22 @@ fun CameraHomeScreen(
     var showCustomCommandsPanel by remember { mutableStateOf(false) }
     var showAllGesturesHelp by remember { mutableStateOf(false) }
     var showVoiceHelp by remember { mutableStateOf(false) }
+    var showSettingsPanel by remember { mutableStateOf(false) }
+    var show360CaptureScreen by remember { mutableStateOf(false) }
 
     // Quick Selectors in Left DSLR Drawer
     var activeManualModeSelector by remember { mutableStateOf("") } // "ISO", "SHUTTER", "WB", "FOCUS", ""
+
+    // Voice control integration for UI panels
+    val assistantBubble by viewModel.assistantBubble.collectAsState()
+    LaunchedEffect(assistantBubble) {
+        if (assistantBubble == "OPENING GALLERY...") {
+            showGalleryPanel = true
+        } else if (assistantBubble == "CONFIGURING SETTINGS...") {
+            showSettingsPanel = true
+            viewModel.speakNow(if (viewModel.currentLanguage.value == "Bengali") "সেটিংস খোলা হয়েছে।" else "Settings opened.")
+        }
+    }
 
     if (!hasPermissions) {
         // Startup splash permissions flow view
@@ -130,12 +143,14 @@ fun CameraHomeScreen(
                 .background(Color.Black)
         ) {
             // BACK KEY handling to dismiss open panels first
-            BackHandler(enabled = showGalleryPanel || showCustomCommandsPanel || viewModel.selectedMediaItem.value != null || viewModel.activeEditingItem.value != null) {
+            BackHandler(enabled = showGalleryPanel || showCustomCommandsPanel || showSettingsPanel || show360CaptureScreen || viewModel.selectedMediaItem.value != null || viewModel.activeEditingItem.value != null) {
                 when {
                     viewModel.activeEditingItem.value != null -> viewModel.activeEditingItem.value = null
                     viewModel.selectedMediaItem.value != null -> viewModel.selectedMediaItem.value = null
+                    show360CaptureScreen -> show360CaptureScreen = false
                     showGalleryPanel -> showGalleryPanel = false
                     showCustomCommandsPanel -> showCustomCommandsPanel = false
+                    showSettingsPanel -> showSettingsPanel = false
                 }
             }
 
@@ -201,8 +216,10 @@ fun CameraHomeScreen(
                 modifier = Modifier.align(Alignment.CenterEnd),
                 onToggleGallery = { showGalleryPanel = !showGalleryPanel },
                 onToggleCustomCommands = { showCustomCommandsPanel = !showCustomCommandsPanel },
+                onToggleSettings = { showSettingsPanel = !showSettingsPanel },
                 onShowGesturesHelp = { showAllGesturesHelp = true },
-                onShowVoiceHelp = { showVoiceHelp = true }
+                onShowVoiceHelp = { showVoiceHelp = true },
+                onToggle360 = { show360CaptureScreen = true }
             )
 
             // -----------------------------------------------------------------------------------------
@@ -240,7 +257,20 @@ fun CameraHomeScreen(
                 )
             }
 
-            // 3. AI Photo Details Modal Dialog
+            // 3. Settings Panel
+            AnimatedVisibility(
+                visible = showSettingsPanel,
+                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(), // From Right
+                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
+                modifier = Modifier.fillMaxHeight().width(320.dp).align(Alignment.CenterEnd)
+            ) {
+                AppSettingsPanel(
+                    viewModel = viewModel,
+                    onDismiss = { showSettingsPanel = false }
+                )
+            }
+
+            // 4. AI Photo Details Modal Dialog
             viewModel.selectedMediaItem.value?.let { selectedItem ->
                 PhotoDetailOverlay(
                     media = selectedItem,
@@ -277,6 +307,19 @@ fun CameraHomeScreen(
                         showVoiceHelp = false
                     },
                     onDismiss = { showVoiceHelp = false }
+                )
+            }
+
+            // 7. Full Screen 360 Panorama Capture
+            AnimatedVisibility(
+                visible = show360CaptureScreen,
+                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(), // From Right
+                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                Panorama360CaptureScreen(
+                    viewModel = viewModel,
+                    onDismiss = { show360CaptureScreen = false }
                 )
             }
 
@@ -549,6 +592,9 @@ fun CameraViewfinder(
     val isLensFront by viewModel.currentCameraLens.collectAsState()
     val shutterTimerValue by viewModel.shutterTimer.collectAsState()
     
+    val panOffsetX by viewModel.panOffsetX.collectAsState()
+    val panOffsetY by viewModel.panOffsetY.collectAsState()
+    
     // Auto-start persistent voice assistant
     LaunchedEffect(Unit) {
         viewModel.initializeSpeechRecognizer(context)
@@ -622,9 +668,18 @@ fun CameraViewfinder(
         modifier = modifier
             .fillMaxSize()
             .pointerInput(Unit) {
-                detectTransformGestures { _, _, zoom, _ ->
+                detectTransformGestures { _, pan, zoom, _ ->
                     val newZoom = (zoomValue * zoom).coerceIn(1.0f, 10.0f)
                     viewModel.zoomLevel.value = newZoom
+                    
+                    // Track multi-direction virtual panning if zoomed in
+                    if (newZoom > 1.0f) {
+                        viewModel.panOffsetX.value += pan.x
+                        viewModel.panOffsetY.value += pan.y
+                    } else {
+                        viewModel.panOffsetX.value = 0f
+                        viewModel.panOffsetY.value = 0f
+                    }
                 }
             }
             .pointerInput(Unit) {
@@ -642,6 +697,10 @@ fun CameraViewfinder(
             modifier = Modifier
                 .fillMaxSize()
                 .then(if (visualBlurAmount > 0) Modifier.blur(visualBlurAmount.dp) else Modifier)
+                .graphicsLayer {
+                    translationX = panOffsetX
+                    translationY = panOffsetY
+                }
         ) {
             key(isLensFront) {
                 AndroidView(
@@ -864,6 +923,8 @@ fun DslrHudTopBar(
     val stabilizationOn by viewModel.isStabilizationActive.collectAsState()
     val hdrOn by viewModel.isHdrActive.collectAsState()
     val cameraMode by viewModel.currentCameraMode.collectAsState()
+    val activeFps by viewModel.currentFps.collectAsState()
+    val activeResolution by viewModel.currentResolution.collectAsState()
 
     val listeningPulseAnimation = rememberInfiniteTransition(label = "listening")
     val audioGlowValue by listeningPulseAnimation.animateFloat(
@@ -1068,7 +1129,7 @@ fun DslrHudTopBar(
 
                 // Video FPS / Resolution Spec
                 Text(
-                    text = "60 FPS  |  4K UHD",
+                    text = "$activeFps FPS  |  $activeResolution",
                     color = Color.White,
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
@@ -1394,8 +1455,10 @@ fun RightSideQuickButtons(
     viewModel: CameraViewModel,
     onToggleGallery: () -> Unit,
     onToggleCustomCommands: () -> Unit,
+    onToggleSettings: () -> Unit,
     onShowGesturesHelp: () -> Unit,
     onShowVoiceHelp: () -> Unit,
+    onToggle360: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val shutterTimerValue by viewModel.shutterTimer.collectAsState()
@@ -1419,6 +1482,22 @@ fun RightSideQuickButtons(
                 .padding(vertical = 12.dp, horizontal = 6.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // Settings Menu Toggle
+            IconButton(
+                onClick = onToggleSettings,
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(Color(0x1BFFFFFF))
+                    .size(36.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = "Settings",
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+
             // AI Overlay on/off switch
             IconButton(
                 onClick = { viewModel.isAiDetectionActive.value = !isAiActive },
@@ -1446,6 +1525,22 @@ fun RightSideQuickButtons(
                 Icon(
                     imageVector = Icons.Default.FlipCameraAndroid,
                     contentDescription = "Flip Lens",
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            
+            // 360 Panorama VR Mode
+            IconButton(
+                onClick = onToggle360,
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(Color(0x1BFFFFFF))
+                    .size(36.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ViewInAr,
+                    contentDescription = "360 VR Mode",
                     tint = Color.White,
                     modifier = Modifier.size(18.dp)
                 )
@@ -2401,6 +2496,50 @@ fun CustomCommandsPanel(
     }
 }
 
+@Composable
+fun SimplePanoramaViewer(uri: String) {
+    val scrollState = rememberScrollState()
+    
+    // Simulate a 360 sensor/touch-based panning viewer
+    Box(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxHeight()
+                .horizontalScroll(scrollState)
+        ) {
+            // Repeat the image twice to simulate continuous sweep/ultra wide bounding
+            AsyncImage(
+                model = uri,
+                contentDescription = "Panoramic View",
+                modifier = Modifier.fillMaxHeight().fillMaxWidth(1.5f), // Stretch wider
+                contentScale = ContentScale.Crop
+            )
+            AsyncImage(
+                model = uri,
+                contentDescription = "Panoramic View",
+                modifier = Modifier.fillMaxHeight().fillMaxWidth(1.5f), // Stretch wider
+                contentScale = ContentScale.Crop
+            )
+        }
+        
+        // Indicator
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(16.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(Color(0x88000000))
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.PanoramaHorizontal, contentDescription = "360", tint = Color.White, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Swipe to Pan", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Component 10: Photo Detail Dialog Sheet
 // -----------------------------------------------------------------------------
@@ -2437,12 +2576,16 @@ fun PhotoDetailOverlay(
                         .aspectRatio(0.82f)
                         .background(Color.Black)
                 ) {
-                    AsyncImage(
-                        model = media.uriPath,
-                        contentDescription = media.name,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
-                    )
+                    if (media.isPanorama) {
+                        SimplePanoramaViewer(uri = media.uriPath)
+                    } else {
+                        AsyncImage(
+                            model = media.uriPath,
+                            contentDescription = media.name,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
 
                     if (media.isVideo) {
                         Icon(
