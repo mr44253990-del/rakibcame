@@ -730,7 +730,7 @@ fun CameraViewfinder(
                                 val imageCapture = androidx.camera.core.ImageCapture.Builder().build()
                                 
                                 // NEW: Object Detection Analyzer
-                                val analyzer = ObjectDetectionAnalyzer(viewModel) { results ->
+                                val analyzer = ObjectDetectionAnalyzer(previewView.context, viewModel) { results ->
                                     viewModel.detectedObjectResults.value = results
                                 }
                                 val imageAnalyzer = androidx.camera.core.ImageAnalysis.Builder()
@@ -2498,26 +2498,67 @@ fun CustomCommandsPanel(
 
 @Composable
 fun SimplePanoramaViewer(uri: String) {
-    val scrollState = rememberScrollState()
+    var offsetX by remember { mutableStateOf(0f) }
     
     // Simulate a 360 sensor/touch-based panning viewer
-    Box(modifier = Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxHeight()
-                .horizontalScroll(scrollState)
-        ) {
-            // Repeat the image twice to simulate continuous sweep/ultra wide bounding
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                detectDragGestures { change, dragAmount ->
+                    change.consume()
+                    // Reversing dragAmount so dragging left pans right
+                    offsetX += dragAmount.x
+                }
+            }
+    ) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val screenWidth = constraints.maxWidth.toFloat()
+            // Create a wide image format aspect (e.g. 2.5x the screen width)
+            val imageWidth = screenWidth * 2.5f 
+            
+            // Normalize offset to ensure seamless looping
+            val normalizedOffset = (offsetX % imageWidth + imageWidth) % imageWidth
+
+            // Draw image 1
             AsyncImage(
                 model = uri,
-                contentDescription = "Panoramic View",
-                modifier = Modifier.fillMaxHeight().fillMaxWidth(1.5f), // Stretch wider
+                contentDescription = "Panoramic View Frame 1",
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(with(androidx.compose.ui.platform.LocalDensity.current) { imageWidth.toDp() })
+                    .graphicsLayer {
+                        // Position image 1
+                        translationX = normalizedOffset - imageWidth
+                    },
                 contentScale = ContentScale.Crop
             )
+            
+            // Draw image 2 (perfectly adjacent)
             AsyncImage(
                 model = uri,
-                contentDescription = "Panoramic View",
-                modifier = Modifier.fillMaxHeight().fillMaxWidth(1.5f), // Stretch wider
+                contentDescription = "Panoramic View Frame 2",
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(with(androidx.compose.ui.platform.LocalDensity.current) { imageWidth.toDp() })
+                    .graphicsLayer {
+                        // Position image 2
+                        translationX = normalizedOffset
+                    },
+                contentScale = ContentScale.Crop
+            )
+            
+            // Draw image 3 (perfectly adjacent) to stop black screen popping when pulling right fast
+            AsyncImage(
+                model = uri,
+                contentDescription = "Panoramic View Frame 3",
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(with(androidx.compose.ui.platform.LocalDensity.current) { imageWidth.toDp() })
+                    .graphicsLayer {
+                        // Position image 3
+                        translationX = normalizedOffset + imageWidth
+                    },
                 contentScale = ContentScale.Crop
             )
         }
@@ -2532,10 +2573,19 @@ fun SimplePanoramaViewer(uri: String) {
                 .padding(horizontal = 12.dp, vertical = 6.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.PanoramaHorizontal, contentDescription = "360", tint = Color.White, modifier = Modifier.size(14.dp))
+                Icon(Icons.Default.PanoramaHorizontal, contentDescription = "360 VR", tint = Color.White, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Swipe to Pan", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                Text("VR 360 - Swipe to Look Around", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
+        }
+        
+        // Target crosshair in center for VR feel
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            drawCircle(
+                color = Color.White,
+                radius = 8f,
+                style = Stroke(width = 2f)
+            )
         }
     }
 }
@@ -2721,6 +2771,8 @@ fun AiEditingStudioOverlay(
     val blurVal by viewModel.aiEditBlurFactor.collectAsState()
     val enhanceVal by viewModel.aiEditEnhanceFactor.collectAsState()
     val beautyVal by viewModel.aiEditFaceBeauty.collectAsState()
+    val hdrVal by viewModel.aiEditHdrRecovery.collectAsState()
+    val vignetteVal by viewModel.aiEditVignette.collectAsState()
     val toneSelected by viewModel.aiEditSkinTone.collectAsState()
     val cartoonVal by viewModel.isCartoonEffectActive.collectAsState()
     val eraserActive by viewModel.objectRemoveMode.collectAsState()
@@ -2731,6 +2783,13 @@ fun AiEditingStudioOverlay(
     val localBlurPx = if (blurVal > 0.05f) {
         (blurVal * 15).toInt().coerceAtLeast(1)
     } else 0
+    
+    // Auto Enhance saturation simulator
+    val colorFilterParams = androidx.compose.ui.graphics.ColorMatrix().apply {
+        // Boost saturation
+        val sat = 1f + (enhanceVal * 0.8f)
+        setToSaturation(sat)
+    }
 
     Box(
         modifier = modifier
@@ -2766,8 +2825,28 @@ fun AiEditingStudioOverlay(
                         model = media.uriPath,
                         contentDescription = "Editing Viewfinder",
                         modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit
+                        contentScale = ContentScale.Fit,
+                        colorFilter = androidx.compose.ui.graphics.ColorFilter.colorMatrix(colorFilterParams)
                     )
+                }
+                
+                // Vignette Layer
+                if (vignetteVal > 0.05f) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        drawRect(
+                            brush = androidx.compose.ui.graphics.Brush.radialGradient(
+                                colors = listOf(Color.Transparent, Color.Black.copy(alpha = vignetteVal * 0.8f)),
+                                center = Offset(size.width / 2, size.height / 2),
+                                radius = size.minDimension / 1.5f
+                            ),
+                            size = size
+                        )
+                    }
+                }
+                
+                // HDR Filter overlay
+                if (hdrVal > 0.05f) {
+                    Box(modifier = Modifier.fillMaxSize().background(Color(0x33FFB300).copy(alpha = hdrVal * 0.3f)))
                 }
 
                 // Eraser healing dots trace
@@ -2899,6 +2978,32 @@ fun AiEditingStudioOverlay(
                     Slider(
                         value = beautyVal,
                         onValueChange = { viewModel.aiEditFaceBeauty.value = it },
+                        colors = SliderDefaults.colors(thumbColor = GoldMuted, activeTrackColor = GoldMuted)
+                    )
+                }
+                
+                // Slider 4: Vignette
+                Column {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Cinematic Vignette", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text("${(vignetteVal * 100).toInt()}%", color = GoldMuted, fontSize = 11.sp)
+                    }
+                    Slider(
+                        value = vignetteVal,
+                        onValueChange = { viewModel.aiEditVignette.value = it },
+                        colors = SliderDefaults.colors(thumbColor = GoldMuted, activeTrackColor = GoldMuted)
+                    )
+                }
+                
+                // Slider 5: HDR
+                Column {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("HDR Tone Mapping & Recovery", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text("${(hdrVal * 100).toInt()}%", color = GoldMuted, fontSize = 11.sp)
+                    }
+                    Slider(
+                        value = hdrVal,
+                        onValueChange = { viewModel.aiEditHdrRecovery.value = it },
                         colors = SliderDefaults.colors(thumbColor = GoldMuted, activeTrackColor = GoldMuted)
                     )
                 }

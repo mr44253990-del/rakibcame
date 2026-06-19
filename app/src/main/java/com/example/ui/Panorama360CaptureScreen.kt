@@ -92,11 +92,11 @@ fun Panorama360CaptureScreen(
                 db.insertMedia(
                     com.example.data.CapturedMedia(
                         name = "PANORAMA_360_${System.currentTimeMillis()}.jpg",
-                        uriPath = "https://images.unsplash.com/photo-1549488344-1f9b8d2bd1f3?w=1600", // simulated super-wide stitched panorama
+                        uriPath = "https://images.unsplash.com/photo-1557971370-e728d13e8e81?ixlib=rb-4.0.3&auto=format&fit=crop&w=3000&q=80", // Simulated equirectangular spherical panorama
                         isVideo = false,
                         isPanorama = true, // KEY: It acts as a 360/pano rendering toggle
-                        detectedObjects = "Spherical Space, Architecture",
-                        detectedScene = "360 Sphere"
+                        detectedObjects = "Spherical Space, Architecture, VR",
+                        detectedScene = "VR 360 Sphere"
                     )
                 )
             }

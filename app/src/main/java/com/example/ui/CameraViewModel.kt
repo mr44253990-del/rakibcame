@@ -231,6 +231,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     val aiEditBlurFactor = MutableStateFlow(0.0f)
     val aiEditEnhanceFactor = MutableStateFlow(0.0f)
     val aiEditFaceBeauty = MutableStateFlow(0.0f)
+    val aiEditHdrRecovery = MutableStateFlow(0.0f)
+    val aiEditVignette = MutableStateFlow(0.0f)
     val aiEditSkinTone = MutableStateFlow("Original") // Original, Bright, Bronze, Warm
     val isCartoonEffectActive = MutableStateFlow(false)
     val objectRemoveMode = MutableStateFlow(false) // Toggle draw to erase
@@ -782,6 +784,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         aiEditBlurFactor.value = 0.0f
         aiEditEnhanceFactor.value = 0.0f
         aiEditFaceBeauty.value = 0.0f
+        aiEditHdrRecovery.value = 0.0f
+        aiEditVignette.value = 0.0f
         aiEditSkinTone.value = "Original"
         isCartoonEffectActive.value = false
         objectRemoveMode.value = false
@@ -799,6 +803,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
             if (aiEditBlurFactor.value > 0.1f) modifications.add("Bokeh")
             if (aiEditEnhanceFactor.value > 0.1f) modifications.add("Sharpened")
             if (aiEditFaceBeauty.value > 0.1f) modifications.add("Skinsmoothed")
+            if (aiEditHdrRecovery.value > 0.1f) modifications.add("HDR")
+            if (aiEditVignette.value > 0.1f) modifications.add("Vignette")
             if (aiEditSkinTone.value != "Original") modifications.add(aiEditSkinTone.value)
             if (isCartoonEffectActive.value) modifications.add("Cartoonized")
 

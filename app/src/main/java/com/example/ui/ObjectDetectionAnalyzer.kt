@@ -16,6 +16,7 @@ import com.google.android.gms.tasks.Task
 import com.google.android.gms.tasks.Tasks
 
 class ObjectDetectionAnalyzer(
+    private val context: android.content.Context,
     private val viewModel: CameraViewModel,
     private val onObjectsDetected: (List<DetectedObjectData>) -> Unit
 ) : ImageAnalysis.Analyzer {
@@ -30,6 +31,9 @@ class ObjectDetectionAnalyzer(
     private val faceDetector = FaceDetection.getClient(FaceDetectorOptions.Builder()
         .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
         .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL).build())
+
+    private var lastScannedCode = ""
+    private var lastScanTime = 0L
 
     @androidx.camera.core.ExperimentalGetImage
     override fun analyze(imageProxy: ImageProxy) {
@@ -108,7 +112,33 @@ class ObjectDetectionAnalyzer(
         if (viewModel.isBarcodeScanningEnabled.value) {
             val t5 = barcodeScanner.process(image).addOnSuccessListener { barcodes ->
                 results.addAll(barcodes.map { barcode ->
-                    DetectedObjectData("Barcode: ${barcode.rawValue}", barcode.boundingBox ?: android.graphics.Rect(), 1.0f)
+                    val rawValue = barcode.rawValue ?: ""
+                    
+                    // Auto-open URL or search google if the code is new or enough time passed
+                    val now = System.currentTimeMillis()
+                    if (rawValue.isNotEmpty() && (rawValue != lastScannedCode || now - lastScanTime > 5000)) {
+                        lastScannedCode = rawValue
+                        lastScanTime = now
+                        
+                        try {
+                            if (rawValue.startsWith("http://") || rawValue.startsWith("https://")) {
+                                val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(rawValue))
+                                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                context.startActivity(intent)
+                                viewModel.speakNow("Opening linked website.")
+                            } else {
+                                val intent = android.content.Intent(android.content.Intent.ACTION_WEB_SEARCH)
+                                intent.putExtra(android.app.SearchManager.QUERY, rawValue)
+                                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                context.startActivity(intent)
+                                viewModel.speakNow("Searching Google for scanned code.")
+                            }
+                        } catch (e: Exception) {
+                            // Ignore missing activity intent resolutions
+                        }
+                    }
+                    
+                    DetectedObjectData("Barcode: $rawValue", barcode.boundingBox ?: android.graphics.Rect(), 1.0f)
                 })
             }
             tasks.add(t5)
