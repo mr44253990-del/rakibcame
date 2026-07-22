@@ -6,9 +6,11 @@ This project was rebuilt from the original repo configuration into a **safe brow
 
 - Chat-first UI
 - Real Android `WebView` browser preview
-- Multi-tab browsing
-- Generic browser actions: open URL, new tab, switch tab, close tab, back, forward, refresh
+- Multi-tab browsing, including background tabs
+- Generic browser actions: open URL, new tab, switch tab, close tab, back, forward, refresh, search
 - DOM actions: click CSS selector, type into selector, extract text from selector
+- Automatic retry for selector actions
+- Live DOM preview updates
 - Action history
 - Memory notes
 - Clipboard aliases such as `{{headline}}`

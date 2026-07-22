@@ -25,7 +25,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.weight
+import androidx.compose.foundation.layout.ColumnScope.weight as columnWeight
+import androidx.compose.foundation.layout.RowScope.weight as rowWeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -50,8 +51,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SmallTopAppBar
 import androidx.compose.material3.Surface
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -63,7 +64,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -77,10 +77,12 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.example.data.ActionLog
 import com.example.data.AgentMemory
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.coroutines.resume
 
 @Composable
@@ -124,11 +126,18 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
         }
     }
 
+    LaunchedEffect(activeTabId, tabs.size) {
+        while (true) {
+            delay(2500)
+            runtime.refreshSnapshot(activeTabId)
+        }
+    }
+
     val activeSnapshot = snapshots[activeTabId]
     val panelTabs = listOf("Chat", "Memory", "History", "Plan")
 
     Column(modifier = Modifier.fillMaxSize().background(Color(0xFF0B0F14))) {
-        SmallTopAppBar(
+        TopAppBar(
             title = {
                 Column {
                     Text("Arena Browser Agent", color = Color.White)
@@ -179,7 +188,7 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(Modifier.width(8.dp))
-                        Column(modifier = Modifier.weight(1f, fill = false)) {
+                        Column(modifier = Modifier.rowWeight(1f, fill = false)) {
                             Text(
                                 text = "${index + 1}. ${tab.title}",
                                 color = Color.White,
@@ -231,7 +240,7 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
                     }
                 }
 
-                Box(modifier = Modifier.weight(1f).padding(12.dp)) {
+                Box(modifier = Modifier.columnWeight(1f).padding(12.dp)) {
                     when (sidePanelIndex) {
                         0 -> ChatPanel(chatMessages = chat)
                         1 -> MemoryPanel(memories = memories, clipboard = clipboard)
@@ -271,7 +280,7 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
             Spacer(Modifier.width(12.dp))
 
             Card(
-                modifier = Modifier.weight(1f).fillMaxHeight(),
+                modifier = Modifier.rowWeight(1f).fillMaxHeight(),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF020617))
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
@@ -283,7 +292,7 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
 
                     Box(
                         modifier = Modifier
-                            .weight(1f)
+                            .columnWeight(1f)
                             .fillMaxWidth()
                             .padding(horizontal = 12.dp)
                             .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(16.dp))
@@ -449,6 +458,11 @@ private fun BrowserStatusHeader(
             }
         }
         Text(snapshot?.url ?: tab?.url ?: "No page loaded", color = Color(0xFF94A3B8))
+        Text(
+            "Back: ${tab?.canGoBack == true}  •  Forward: ${tab?.canGoForward == true}  •  Live preview: ${snapshot != null}",
+            color = Color(0xFF64748B),
+            style = MaterialTheme.typography.labelSmall
+        )
         if (clipboard.isNotEmpty()) {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 clipboard.keys.take(4).forEach { alias ->
@@ -477,6 +491,12 @@ private fun PreviewPanel(snapshot: PageSnapshot?) {
         }
         Text(snapshot.title, color = Color.White, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(4.dp))
+        Text(
+            "Updated: ${formatTimestamp(snapshot.updatedAt)}  •  Elements: ${snapshot.interactive.size}",
+            color = Color(0xFF64748B),
+            style = MaterialTheme.typography.labelSmall
+        )
+        Spacer(Modifier.height(4.dp))
         Text(snapshot.excerpt.ifBlank { "No visible text found." }, color = Color(0xFFCBD5E1), maxLines = 6, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(10.dp))
         Text("Interactive elements", color = Color.White, fontWeight = FontWeight.Bold)
@@ -499,6 +519,10 @@ private data class RuntimeResult(
     val message: String,
     val extractedText: String? = null
 )
+
+private fun formatTimestamp(value: Long): String {
+    return SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(value))
+}
 
 private class BrowserRuntime(
     context: Context,
@@ -575,6 +599,10 @@ private class BrowserRuntime(
         webViews.keys.toList().forEach(::destroyTab)
     }
 
+    fun refreshSnapshot(tabId: String) {
+        captureSnapshot(tabId)
+    }
+
     suspend fun execute(action: BrowserAction, viewModel: BrowserAgentViewModel): RuntimeResult {
         return when (action.kind) {
             "new_tab" -> {
@@ -615,27 +643,44 @@ private class BrowserRuntime(
             "click" -> {
                 val webView = resolveTab(action.tabId)
                 val selector = action.selector ?: return RuntimeResult(false, "No selector provided.")
-                val payload = jsCommand(webView, clickScript(selector))
+                val payload = selectorActionWithRetry(webView) { jsCommand(webView, clickScript(selector)) }
                 val ok = payload.optBoolean("ok", false)
+                refreshSnapshot(action.tabId ?: webViews.keys.first())
                 RuntimeResult(ok, payload.optString("message", if (ok) "Clicked." else "Click failed."))
             }
             "type" -> {
                 val webView = resolveTab(action.tabId)
                 val selector = action.selector ?: return RuntimeResult(false, "No selector provided.")
                 val text = viewModel.resolveTemplate(action.text)
-                val payload = jsCommand(webView, typeScript(selector, text))
+                val payload = selectorActionWithRetry(webView) { jsCommand(webView, typeScript(selector, text)) }
                 val ok = payload.optBoolean("ok", false)
+                refreshSnapshot(action.tabId ?: webViews.keys.first())
                 RuntimeResult(ok, payload.optString("message", if (ok) "Typed text." else "Typing failed."))
             }
             "extract_text" -> {
                 val webView = resolveTab(action.tabId)
                 val selector = action.selector ?: return RuntimeResult(false, "No selector provided.")
-                val payload = jsCommand(webView, extractScript(selector))
+                val payload = selectorActionWithRetry(webView) { jsCommand(webView, extractScript(selector)) }
                 val ok = payload.optBoolean("ok", false)
+                refreshSnapshot(action.tabId ?: webViews.keys.first())
                 RuntimeResult(ok, payload.optString("message", "Extracted text."), payload.optString("text"))
             }
             else -> RuntimeResult(false, "Unsupported action: ${action.kind}")
         }
+    }
+
+    private suspend fun selectorActionWithRetry(
+        webView: WebView,
+        attempts: Int = 3,
+        block: suspend () -> JSONObject
+    ): JSONObject {
+        var last = JSONObject("{\"ok\":false,\"message\":\"Action failed.\"}")
+        repeat(attempts) { index ->
+            last = block()
+            if (last.optBoolean("ok", false)) return last
+            delay((index + 1) * 500L)
+        }
+        return last
     }
 
     private suspend fun navigate(tabId: String?, successMessage: String, action: WebView.() -> Boolean): RuntimeResult {
@@ -643,6 +688,7 @@ private class BrowserRuntime(
         val ok = suspendCancellableCoroutine<Boolean> { continuation ->
             webView.post { continuation.resume(webView.action()) }
         }
+        refreshSnapshot(tabId ?: webViews.keys.first())
         return if (ok) RuntimeResult(true, successMessage) else RuntimeResult(false, "Navigation not available.")
     }
 
@@ -753,13 +799,13 @@ private class BrowserRuntime(
           const esc = (value) => (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(value) : value;
           const selectorFor = (el) => {
             if (!el) return '';
-            if (el.id) return `#${esc(el.id)}`;
+            if (el.id) return '#' + esc(el.id);
             const name = el.getAttribute('name');
-            if (name) return `${el.tagName.toLowerCase()}[name="${name}"]`;
+            if (name) return el.tagName.toLowerCase() + '[name="' + name + '"]';
             const aria = el.getAttribute('aria-label');
-            if (aria) return `${el.tagName.toLowerCase()}[aria-label="${aria}"]`;
+            if (aria) return el.tagName.toLowerCase() + '[aria-label="' + aria + '"]';
             const type = el.getAttribute('type');
-            if (type) return `${el.tagName.toLowerCase()}[type="${type}"]`;
+            if (type) return el.tagName.toLowerCase() + '[type="' + type + '"]';
             let path = el.tagName.toLowerCase();
             let parent = el.parentElement;
             let current = el;
@@ -767,7 +813,7 @@ private class BrowserRuntime(
             while (parent && depth < 3) {
               const siblings = Array.from(parent.children).filter(node => node.tagName === current.tagName);
               const index = siblings.indexOf(current) + 1;
-              path = `${current.tagName.toLowerCase()}:nth-of-type(${index}) > ${path}`;
+              path = current.tagName.toLowerCase() + ':nth-of-type(' + index + ') > ' + path;
               current = parent;
               parent = parent.parentElement;
               depth += 1;

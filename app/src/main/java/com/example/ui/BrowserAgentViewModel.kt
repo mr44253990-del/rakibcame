@@ -113,7 +113,7 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
         listOf(
             ChatMessage(
                 role = ChatRole.ASSISTANT,
-                text = "Hi. I can open pages, switch tabs, read visible text, click CSS selectors, type values, keep memory, and show action history. I will not automate temp-mail, account creation, or verification bypass workflows."
+                text = "Hi. I can open pages, switch tabs, read visible text, click CSS selectors, type values, retry selector actions, keep memory, and show action history with live preview updates. I will not automate temp-mail, account creation, or verification bypass workflows."
             )
         )
     )
@@ -271,7 +271,7 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
 
     fun resolveTemplate(text: String?): String {
         if (text.isNullOrBlank()) return ""
-        var resolved = text
+        var resolved = text.orEmpty()
         _clipboard.value.forEach { (key, value) ->
             resolved = resolved.replace("{{$key}}", value)
         }
@@ -333,6 +333,12 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
         val lowered = prompt.lowercase()
         val actions = mutableListOf<BrowserAction>()
 
+        if (lowered.startsWith("open background ") || lowered.startsWith("background tab ")) {
+            val url = extractUrl(prompt)?.let(::normalizeUrl)
+            actions += BrowserAction(kind = "new_tab", url = url ?: "https://example.com", background = true)
+            return actions
+        }
+
         extractUrl(prompt)?.let { url ->
             if (
                 lowered.startsWith("open ") ||
@@ -341,6 +347,17 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
                 lowered == url.lowercase()
             ) {
                 actions += BrowserAction(kind = "open_url", url = normalizeUrl(url))
+                return actions
+            }
+        }
+
+        if (lowered.startsWith("search ")) {
+            val query = prompt.substringAfter("search ").trim()
+            if (query.isNotBlank()) {
+                actions += BrowserAction(
+                    kind = "open_url",
+                    url = "https://www.google.com/search?q=" + query.replace(" ", "+")
+                )
                 return actions
             }
         }
@@ -444,7 +461,7 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
 
                 Supported actions:
                 - open_url {"kind":"open_url","url":"https://example.com","tabId":"tab-1"}
-                - new_tab {"kind":"new_tab","url":"https://example.com"}
+                - new_tab {"kind":"new_tab","url":"https://example.com","background":true}
                 - switch_tab {"kind":"switch_tab","tabId":"tab-1"}
                 - click {"kind":"click","selector":"button.primary","tabId":"tab-1"}
                 - type {"kind":"type","selector":"input[name='q']","text":"hello","tabId":"tab-1"}
@@ -453,7 +470,8 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
 
                 Use CSS selectors only.
                 Use {{alias}} placeholders inside type.text if an earlier extract_text saved a value.
-                Keep plans short, concrete, and safe.
+                Prefer short plans, and use wait when a page needs time before interaction.
+                Keep plans concrete, safe, and resilient.
 
                 Response shape:
                 {
