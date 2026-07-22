@@ -8,21 +8,21 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.ui.CameraHomeScreen
-import com.example.ui.CameraViewModel
+import com.example.ui.BrowserAgentScreen
+import com.example.ui.BrowserAgentViewModel
 import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
-  override fun onCreate(savedInstanceState: Bundle?) {
-    super.onCreate(savedInstanceState)
-    enableEdgeToEdge()
-    setContent {
-      MyApplicationTheme {
-        Surface(modifier = Modifier.fillMaxSize()) {
-          val viewModel: CameraViewModel = viewModel()
-          CameraHomeScreen(viewModel = viewModel)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent {
+            MyApplicationTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    val viewModel: BrowserAgentViewModel = viewModel()
+                    BrowserAgentScreen(viewModel = viewModel)
+                }
+            }
         }
-      }
     }
-  }
 }

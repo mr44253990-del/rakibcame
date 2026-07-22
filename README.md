@@ -1,21 +1,45 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# Arena Browser Agent (Android)
 
-# Run and deploy your AI Studio app
+This project was rebuilt from the original repo configuration into a **safe browser-assistant Android app**.
 
-This contains everything you need to run your app locally.
+## What it does
 
-View your app in AI Studio: https://ai.studio/apps/622faed6-5419-4bde-a90e-40e68da4fdf8
+- Chat-first UI
+- Real Android `WebView` browser preview
+- Multi-tab browsing
+- Generic browser actions: open URL, new tab, switch tab, close tab, back, forward, refresh
+- DOM actions: click CSS selector, type into selector, extract text from selector
+- Action history
+- Memory notes
+- Clipboard aliases such as `{{headline}}`
+- Optional Mistral planning from natural-language prompts
 
-## Run Locally
+## Safety limits
 
-**Prerequisites:**  [Android Studio](https://developer.android.com/studio)
+This app intentionally **does not automate**:
 
+- temporary email workflows
+- account creation abuse
+- OTP / verification harvesting
+- bypassing site restrictions
 
-1. Open Android Studio
-2. Select **Open** and choose the directory containing this project
-3. Allow Android Studio to fix any incompatibilities as it imports the project.
-4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)
-5. Remove this line from the app's `build.gradle.kts` file: `signingConfig = signingConfigs.getByName("debugConfig")`
-6. Run the app on an emulator or physical device
+## Setup
+
+1. Open in Android Studio.
+2. Create a `.env` file from `.env.example`.
+3. Add your own `MISTRAL_API_KEY`.
+4. Build and run.
+
+## Example prompts
+
+- `open https://example.com`
+- `click button.primary`
+- `type hello world into input[name='q']`
+- `extract h1 as headline`
+- `new tab https://developer.android.com`
+- `remember use the second tab for docs`
+
+## Notes
+
+- The previous camera-specific code was removed.
+- Do **not** commit real API keys or GitHub tokens.

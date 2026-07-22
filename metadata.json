@@ -1,6 +1,6 @@
 {
-  "name": "rakibcame",
-  "description": "rakibcame is a high-performance offline AI voice-controlled and gesture-controlled DSLR style camera assistant with real-time on-device object/face recognition, professional manual controls, and a custom voice command system.",
+  "name": "arena-browser-agent",
+  "description": "A safe Android browser assistant with chat-first UI, live browser preview, multi-tab WebView control, memory, action history, DOM reading, generic click/type/extract actions, and optional Mistral AI planning.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
