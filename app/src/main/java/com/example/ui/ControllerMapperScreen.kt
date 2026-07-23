@@ -86,7 +86,10 @@ fun ControllerMapperScreen(viewModel: ControllerMapperViewModel) {
                 onRequestRoot = viewModel::requestRootAccess,
                 onCheckUinput = viewModel::checkUinputAccess,
                 onRefreshShizuku = viewModel::refreshShizukuState,
-                onRequestShizukuPermission = viewModel::requestShizukuPermission
+                onRequestShizukuPermission = viewModel::requestShizukuPermission,
+                onBindBackend = viewModel::bindPrivilegedService,
+                onCreateVirtualDevice = viewModel::createVirtualDevice,
+                onDestroyVirtualDevice = viewModel::destroyVirtualDevice
             )
         }
         item {
@@ -196,7 +199,10 @@ private fun RootCard(
     onRequestRoot: () -> Unit,
     onCheckUinput: () -> Unit,
     onRefreshShizuku: () -> Unit,
-    onRequestShizukuPermission: () -> Unit
+    onRequestShizukuPermission: () -> Unit,
+    onBindBackend: () -> Unit,
+    onCreateVirtualDevice: () -> Unit,
+    onDestroyVirtualDevice: () -> Unit
 ) {
     Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF111827))) {
         Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
@@ -236,9 +242,16 @@ private fun RootCard(
             }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                Button(onClick = onRequestRoot, modifier = Modifier.weight(1f)) { Text("Request root") }
+                Button(onClick = onBindBackend, modifier = Modifier.weight(1f)) { Text("Bind Backend") }
                 Button(onClick = onCheckUinput, modifier = Modifier.weight(1f)) { Text("Check /dev/uinput") }
             }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(onClick = onCreateVirtualDevice, modifier = Modifier.weight(1f)) { Text("Create Virtual") }
+                Button(onClick = onDestroyVirtualDevice, modifier = Modifier.weight(1f)) { Text("Destroy Virtual") }
+            }
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = onRequestRoot, modifier = Modifier.fillMaxWidth()) { Text("Request root") }
         }
     }
 }

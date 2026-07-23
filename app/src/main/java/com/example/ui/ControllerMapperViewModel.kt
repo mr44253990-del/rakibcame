@@ -1,11 +1,14 @@
 package com.example.ui
 
 import android.app.Application
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.hardware.input.InputManager
 import android.os.Build
+import android.os.IBinder
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -16,6 +19,8 @@ import com.example.data.AgentRepository
 import com.example.data.AppDatabase
 import com.example.data.ButtonMapping
 import com.example.data.ControllerProfile
+import com.example.privileged.IPrivilegedMapperService
+import com.example.privileged.PrivilegedMapperUserService
 import com.example.service.ControllerMapperService
 import rikka.shizuku.Shizuku
 import kotlinx.coroutines.Dispatchers
@@ -65,6 +70,7 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
             val granted = grantResult == PackageManager.PERMISSION_GRANTED
             _shizukuPermissionGranted.value = granted
             _shizukuBackendStatus.value = if (granted) backendLabel() else "Shizuku permission denied."
+            if (granted && _rootModeEnabled.value) bindPrivilegedService()
             addTrace("Shizuku permission", if (granted) "Permission granted" else "Permission denied", if (granted) "success" else "error")
         }
     }
@@ -77,8 +83,29 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
     private val shizukuBinderDeadListener = Shizuku.OnBinderDeadListener {
         _shizukuAvailable.value = false
         _shizukuPermissionGranted.value = false
+        privilegedService = null
         _shizukuBackendStatus.value = "Shizuku binder disconnected."
         addTrace("Shizuku disconnected", "Binder dead", "error")
+    }
+
+    private var privilegedService: IPrivilegedMapperService? = null
+
+    private val privilegedServiceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            privilegedService = IPrivilegedMapperService.Stub.asInterface(service)
+            val label = runCatching { privilegedService?.getBackendLabel() }.getOrNull().orEmpty()
+            _shizukuBackendStatus.value = if (label.isBlank()) "Privileged backend connected." else label
+            addTrace("Privileged backend", _shizukuBackendStatus.value, "success")
+            if (_serviceEnabled.value && _rootModeEnabled.value) {
+                createVirtualDevice()
+            }
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            privilegedService = null
+            _shizukuBackendStatus.value = "Privileged backend disconnected."
+            addTrace("Privileged backend", "Disconnected", "error")
+        }
     }
 
     private val _serviceEnabled = MutableStateFlow(prefs.getBoolean("SERVICE_ENABLED", false))
@@ -161,6 +188,7 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
         val granted = runCatching { Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED }.getOrDefault(false)
         _shizukuPermissionGranted.value = granted
         _shizukuBackendStatus.value = if (granted) backendLabel() else "Shizuku connected, permission not granted yet."
+        if (granted && _rootModeEnabled.value) bindPrivilegedService()
     }
 
     fun requestShizukuPermission() {
@@ -172,6 +200,7 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
         if (runCatching { Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED }.getOrDefault(false)) {
             _shizukuPermissionGranted.value = true
             _shizukuBackendStatus.value = backendLabel()
+            bindPrivilegedService()
             addTrace("Shizuku", "Permission already granted", "success")
             return
         }
@@ -198,6 +227,69 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
             0 -> "Shizuku / Sui backend: ROOT (uid=0)"
             2000 -> "Shizuku backend: ADB shell (uid=2000)"
             else -> "Shizuku backend connected (uid=$uid)"
+        }
+    }
+
+    fun bindPrivilegedService() {
+        if (!_shizukuPermissionGranted.value) {
+            _shizukuBackendStatus.value = "Grant Shizuku permission first."
+            return
+        }
+        if (privilegedService != null) {
+            _shizukuBackendStatus.value = runCatching { privilegedService?.getBackendLabel() }.getOrNull().orEmpty().ifBlank { "Privileged backend already connected." }
+            return
+        }
+        val args = Shizuku.UserServiceArgs(
+            ComponentName(getApplication<Application>().packageName, PrivilegedMapperUserService::class.java.name)
+        )
+            .daemon(false)
+            .processNameSuffix("uinput")
+            .tag("virtual_xbox_uinput")
+            .version(1)
+        runCatching {
+            Shizuku.bindUserService(args, privilegedServiceConnection)
+        }.onSuccess {
+            _shizukuBackendStatus.value = "Binding privileged backend…"
+            addTrace("Privileged backend", "Binding requested", "info")
+        }.onFailure {
+            _shizukuBackendStatus.value = "Bind failed: ${it.message ?: "unknown error"}"
+            addTrace("Privileged backend", _shizukuBackendStatus.value, "error")
+        }
+    }
+
+    fun unbindPrivilegedService() {
+        val args = Shizuku.UserServiceArgs(
+            ComponentName(getApplication<Application>().packageName, PrivilegedMapperUserService::class.java.name)
+        )
+            .daemon(false)
+            .processNameSuffix("uinput")
+            .tag("virtual_xbox_uinput")
+            .version(1)
+        runCatching { Shizuku.unbindUserService(args, privilegedServiceConnection, true) }
+        privilegedService = null
+        _shizukuBackendStatus.value = "Privileged backend unbound."
+    }
+
+    fun createVirtualDevice() {
+        if (privilegedService == null) {
+            bindPrivilegedService()
+            _rootStatus.value = "Binding privileged backend first. Tap Create Virtual again after backend connects."
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runCatching { privilegedService?.createVirtualXboxDevice() == true }.getOrDefault(false)
+            val msg = if (ok) "Virtual Xbox device created via privileged backend." else "Virtual device create failed. Check root/Shizuku/uinput."
+            _rootStatus.value = msg
+            addTrace("Virtual device", msg, if (ok) "success" else "error")
+        }
+    }
+
+    fun destroyVirtualDevice() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runCatching { privilegedService?.destroyVirtualDevice() == true }.getOrDefault(false)
+            val msg = if (ok) "Virtual Xbox device destroyed." else "Virtual device destroy failed or not active."
+            _rootStatus.value = msg
+            addTrace("Virtual device", msg, if (ok) "success" else "error")
         }
     }
 
@@ -274,6 +366,10 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
         }
         if (enabled) {
             ContextCompat.startForegroundService(context, intent)
+            if (_rootModeEnabled.value && _shizukuPermissionGranted.value) {
+                bindPrivilegedService()
+                createVirtualDevice()
+            }
             _status.value = if (_rootModeEnabled.value) {
                 "Service started with root-ready mode requested."
             } else {
@@ -281,6 +377,7 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
             }
             addTrace("Service ON", "Foreground compatibility service চালু হয়েছে।", "info")
         } else {
+            destroyVirtualDevice()
             context.startService(intent)
             _status.value = "Service stopped."
             addTrace("Service OFF", "Foreground service বন্ধ করা হয়েছে।", "info")
@@ -307,6 +404,7 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
     fun setRootModeEnabled(enabled: Boolean) {
         prefs.edit().putBoolean("ROOT_MODE_ENABLED", enabled).apply()
         _rootModeEnabled.value = enabled
+        if (enabled && _shizukuPermissionGranted.value) bindPrivilegedService() else if (!enabled) unbindPrivilegedService()
         _status.value = if (enabled) "Root-ready mode enabled. Grant superuser permission when prompted." else "Root-ready mode disabled."
         addTrace("Root mode", if (enabled) "Root-ready mode enabled" else "Root-ready mode disabled", "info")
     }
@@ -324,7 +422,12 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
     fun checkUinputAccess() {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                runRootCommand("if [ -w /dev/uinput ]; then echo UINPUT_WRITABLE; else echo UINPUT_BLOCKED; fi")
+                if (_shizukuPermissionGranted.value && privilegedService != null) {
+                    val ok = runCatching { privilegedService?.canOpenUinput() == true }.getOrDefault(false)
+                    if (ok) "UINPUT_WRITABLE via privileged backend" else "UINPUT_BLOCKED via privileged backend"
+                } else {
+                    runRootCommand("if [ -w /dev/uinput ]; then echo UINPUT_WRITABLE; else echo UINPUT_BLOCKED; fi")
+                }
             }
             _rootStatus.value = result
             addTrace("uinput check", result, if (result.contains("UINPUT_WRITABLE")) "success" else "error")
@@ -436,11 +539,46 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
     private fun markPressed(sourceCode: String, targetButton: String) {
         activeSourceTargets[sourceCode] = targetButton
         _pressedTargets.value = activeSourceTargets.values.toSet()
+        emitVirtualControl(targetButton, true)
     }
 
     private fun markReleased(sourceCode: String) {
-        activeSourceTargets.remove(sourceCode)
+        val removed = activeSourceTargets.remove(sourceCode)
         _pressedTargets.value = activeSourceTargets.values.toSet()
+        if (removed != null) emitVirtualControl(removed, false)
+    }
+
+    private fun emitVirtualControl(targetButton: String, pressed: Boolean) {
+        if (!_serviceEnabled.value || !_rootModeEnabled.value) return
+        val code = controlCodeForTarget(targetButton) ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runCatching { privilegedService?.emitXboxButton(code, pressed) == true }.getOrDefault(false)
+            if (!ok && pressed) {
+                addTrace("Virtual emit", "${targetButton} emit failed. Check backend/device state.", "error")
+            }
+        }
+    }
+
+    private fun controlCodeForTarget(targetButton: String): Int? {
+        return when (targetButton) {
+            "A" -> NativeUinputBridge.CONTROL_A
+            "B" -> NativeUinputBridge.CONTROL_B
+            "X" -> NativeUinputBridge.CONTROL_X
+            "Y" -> NativeUinputBridge.CONTROL_Y
+            "LB" -> NativeUinputBridge.CONTROL_LB
+            "RB" -> NativeUinputBridge.CONTROL_RB
+            "LT" -> NativeUinputBridge.CONTROL_LT
+            "RT" -> NativeUinputBridge.CONTROL_RT
+            "LS" -> NativeUinputBridge.CONTROL_LS
+            "RS" -> NativeUinputBridge.CONTROL_RS
+            "BACK" -> NativeUinputBridge.CONTROL_BACK
+            "START" -> NativeUinputBridge.CONTROL_START
+            "DPAD_UP" -> NativeUinputBridge.CONTROL_DPAD_UP
+            "DPAD_DOWN" -> NativeUinputBridge.CONTROL_DPAD_DOWN
+            "DPAD_LEFT" -> NativeUinputBridge.CONTROL_DPAD_LEFT
+            "DPAD_RIGHT" -> NativeUinputBridge.CONTROL_DPAD_RIGHT
+            else -> null
+        }
     }
 
     private fun addTrace(title: String, details: String, level: String) {
