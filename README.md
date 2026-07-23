@@ -13,7 +13,11 @@ It provides:
 - Mapping profiles saved with Room
 - Foreground service toggle for compatibility mode
 - Root / SU readiness check for broader game compatibility
+- Shizuku / Sui integration scaffold with provider config
+- Shizuku permission request flow inside the app
+- Root / ADB backend status display
 - `/dev/uinput` access diagnostic button
+- JNI + native uinput layer scaffold structure
 - Live trace panel showing what the app is doing
 - Remove-all-registered mappings option
 
@@ -61,8 +65,11 @@ If you want the mapper to behave more like a controller outside the app, the pra
 
 This build now includes:
 - root permission request trigger through `su`
+- Shizuku provider configuration and permission-request entry point
+- backend status for Shizuku root vs ADB shell
 - `/dev/uinput` writable diagnostic
 - root-ready service mode toggle
+- native `app/src/main/cpp` uinput scaffold files for the next phase
 
 ## Notes
 

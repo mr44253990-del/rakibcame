@@ -3,6 +3,7 @@ package com.example.ui
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.hardware.input.InputManager
 import android.os.Build
 import android.view.InputDevice
@@ -16,6 +17,7 @@ import com.example.data.AppDatabase
 import com.example.data.ButtonMapping
 import com.example.data.ControllerProfile
 import com.example.service.ControllerMapperService
+import rikka.shizuku.Shizuku
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -58,6 +60,27 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
     private val inputManager = application.getSystemService(Context.INPUT_SERVICE) as InputManager
     private val activeSourceTargets = linkedMapOf<String, String>()
 
+    private val shizukuPermissionListener = Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
+        if (requestCode == SHIZUKU_REQUEST_CODE) {
+            val granted = grantResult == PackageManager.PERMISSION_GRANTED
+            _shizukuPermissionGranted.value = granted
+            _shizukuBackendStatus.value = if (granted) backendLabel() else "Shizuku permission denied."
+            addTrace("Shizuku permission", if (granted) "Permission granted" else "Permission denied", if (granted) "success" else "error")
+        }
+    }
+
+    private val shizukuBinderReceivedListener = Shizuku.OnBinderReceivedListener {
+        refreshShizukuState()
+        addTrace("Shizuku connected", backendLabel(), "success")
+    }
+
+    private val shizukuBinderDeadListener = Shizuku.OnBinderDeadListener {
+        _shizukuAvailable.value = false
+        _shizukuPermissionGranted.value = false
+        _shizukuBackendStatus.value = "Shizuku binder disconnected."
+        addTrace("Shizuku disconnected", "Binder dead", "error")
+    }
+
     private val _serviceEnabled = MutableStateFlow(prefs.getBoolean("SERVICE_ENABLED", false))
     val serviceEnabled: StateFlow<Boolean> = _serviceEnabled.asStateFlow()
 
@@ -66,6 +89,15 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
 
     private val _rootStatus = MutableStateFlow("Root / Sui backend not checked yet.")
     val rootStatus: StateFlow<String> = _rootStatus.asStateFlow()
+
+    private val _shizukuAvailable = MutableStateFlow(false)
+    val shizukuAvailable: StateFlow<Boolean> = _shizukuAvailable.asStateFlow()
+
+    private val _shizukuPermissionGranted = MutableStateFlow(false)
+    val shizukuPermissionGranted: StateFlow<Boolean> = _shizukuPermissionGranted.asStateFlow()
+
+    private val _shizukuBackendStatus = MutableStateFlow("Shizuku backend not connected.")
+    val shizukuBackendStatus: StateFlow<String> = _shizukuBackendStatus.asStateFlow()
 
     private val _status = MutableStateFlow("Compatibility mode ready.")
     val status: StateFlow<String> = _status.asStateFlow()
@@ -97,6 +129,7 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
 
     init {
         inputManager.registerInputDeviceListener(this, null)
+        initializeShizuku()
         refreshConnectedDevices()
         viewModelScope.launch {
             ensureDefaultProfile()
@@ -106,6 +139,66 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
             details = "USB compatibility mapper চালু হয়েছে। Stock Android non-root mode এ real virtual Xbox HID output সীমিত। Root/Sui backend later required for broader game compatibility.",
             level = "info"
         )
+    }
+
+    private fun initializeShizuku() {
+        runCatching {
+            Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
+            Shizuku.addBinderReceivedListenerSticky(shizukuBinderReceivedListener)
+            Shizuku.addBinderDeadListener(shizukuBinderDeadListener)
+        }
+        refreshShizukuState()
+    }
+
+    fun refreshShizukuState() {
+        val available = runCatching { Shizuku.pingBinder() }.getOrDefault(false)
+        _shizukuAvailable.value = available
+        if (!available) {
+            _shizukuPermissionGranted.value = false
+            _shizukuBackendStatus.value = "Shizuku not running. Start Shizuku or Sui first."
+            return
+        }
+        val granted = runCatching { Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED }.getOrDefault(false)
+        _shizukuPermissionGranted.value = granted
+        _shizukuBackendStatus.value = if (granted) backendLabel() else "Shizuku connected, permission not granted yet."
+    }
+
+    fun requestShizukuPermission() {
+        if (!runCatching { Shizuku.pingBinder() }.getOrDefault(false)) {
+            _shizukuBackendStatus.value = "Shizuku is not running. Open Shizuku app first."
+            addTrace("Shizuku", "Shizuku binder not available", "error")
+            return
+        }
+        if (runCatching { Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED }.getOrDefault(false)) {
+            _shizukuPermissionGranted.value = true
+            _shizukuBackendStatus.value = backendLabel()
+            addTrace("Shizuku", "Permission already granted", "success")
+            return
+        }
+        val deniedPermanently = runCatching { Shizuku.shouldShowRequestPermissionRationale() }.getOrDefault(false)
+        if (deniedPermanently) {
+            _shizukuBackendStatus.value = "Shizuku permission was denied. Grant it from Shizuku manager."
+            addTrace("Shizuku", "Permission denied previously", "error")
+            return
+        }
+        runCatching { Shizuku.requestPermission(SHIZUKU_REQUEST_CODE) }
+            .onSuccess {
+                _shizukuBackendStatus.value = "Permission request sent to Shizuku."
+                addTrace("Shizuku", "Permission request sent", "info")
+            }
+            .onFailure {
+                _shizukuBackendStatus.value = "Shizuku request failed: ${it.message ?: "unknown error"}"
+                addTrace("Shizuku", _shizukuBackendStatus.value, "error")
+            }
+    }
+
+    private fun backendLabel(): String {
+        val uid = runCatching { Shizuku.getUid() }.getOrDefault(-1)
+        return when (uid) {
+            0 -> "Shizuku / Sui backend: ROOT (uid=0)"
+            2000 -> "Shizuku backend: ADB shell (uid=2000)"
+            else -> "Shizuku backend connected (uid=$uid)"
+        }
     }
 
     private suspend fun ensureDefaultProfile() {
@@ -377,6 +470,15 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
 
     override fun onCleared() {
         inputManager.unregisterInputDeviceListener(this)
+        runCatching {
+            Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener)
+            Shizuku.removeBinderReceivedListener(shizukuBinderReceivedListener)
+            Shizuku.removeBinderDeadListener(shizukuBinderDeadListener)
+        }
         super.onCleared()
+    }
+
+    companion object {
+        private const val SHIZUKU_REQUEST_CODE = 1107
     }
 }

@@ -45,6 +45,9 @@ fun ControllerMapperScreen(viewModel: ControllerMapperViewModel) {
     val serviceEnabled by viewModel.serviceEnabled.collectAsState()
     val rootModeEnabled by viewModel.rootModeEnabled.collectAsState()
     val rootStatus by viewModel.rootStatus.collectAsState()
+    val shizukuAvailable by viewModel.shizukuAvailable.collectAsState()
+    val shizukuPermissionGranted by viewModel.shizukuPermissionGranted.collectAsState()
+    val shizukuBackendStatus by viewModel.shizukuBackendStatus.collectAsState()
     val status by viewModel.status.collectAsState()
     val devices by viewModel.connectedDevices.collectAsState()
     val profiles by viewModel.profiles.collectAsState()
@@ -76,9 +79,14 @@ fun ControllerMapperScreen(viewModel: ControllerMapperViewModel) {
             RootCard(
                 rootModeEnabled = rootModeEnabled,
                 rootStatus = rootStatus,
+                shizukuAvailable = shizukuAvailable,
+                shizukuPermissionGranted = shizukuPermissionGranted,
+                shizukuBackendStatus = shizukuBackendStatus,
                 onRootModeToggle = viewModel::setRootModeEnabled,
                 onRequestRoot = viewModel::requestRootAccess,
-                onCheckUinput = viewModel::checkUinputAccess
+                onCheckUinput = viewModel::checkUinputAccess,
+                onRefreshShizuku = viewModel::refreshShizukuState,
+                onRequestShizukuPermission = viewModel::requestShizukuPermission
             )
         }
         item {
@@ -181,9 +189,14 @@ private fun ServiceCard(enabled: Boolean, onToggle: (Boolean) -> Unit) {
 private fun RootCard(
     rootModeEnabled: Boolean,
     rootStatus: String,
+    shizukuAvailable: Boolean,
+    shizukuPermissionGranted: Boolean,
+    shizukuBackendStatus: String,
     onRootModeToggle: (Boolean) -> Unit,
     onRequestRoot: () -> Unit,
-    onCheckUinput: () -> Unit
+    onCheckUinput: () -> Unit,
+    onRefreshShizuku: () -> Unit,
+    onRequestShizukuPermission: () -> Unit
 ) {
     Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF111827))) {
         Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
@@ -193,9 +206,9 @@ private fun RootCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Root / Sui readiness", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text("Root / Shizuku / Sui readiness", color = Color.White, fontWeight = FontWeight.Bold)
                     Text(
-                        "এটা Magisk/SU prompt trigger করবে। Root mode ON করলেও true system-wide Xbox output-এর জন্য native uinput backend দরকার.",
+                        "এখান থেকে Shizuku permission request, root check, আর /dev/uinput access diagnostic চালাতে পারবেন।",
                         color = Color(0xFF94A3B8),
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -203,10 +216,25 @@ private fun RootCard(
                 Switch(checked = rootModeEnabled, onCheckedChange = onRootModeToggle)
             }
             Spacer(Modifier.height(8.dp))
+            Text(
+                "Shizuku connected: $shizukuAvailable  •  Permission: $shizukuPermissionGranted",
+                color = if (shizukuPermissionGranted) Color(0xFF22C55E) else Color(0xFFFBBF24),
+                style = MaterialTheme.typography.bodySmall
+            )
+            Spacer(Modifier.height(6.dp))
             SelectionContainer {
-                Text(rootStatus, color = Color(0xFF93C5FD), style = MaterialTheme.typography.bodySmall)
+                Text(shizukuBackendStatus, color = Color(0xFF93C5FD), style = MaterialTheme.typography.bodySmall)
+            }
+            Spacer(Modifier.height(6.dp))
+            SelectionContainer {
+                Text(rootStatus, color = Color(0xFFE2E8F0), style = MaterialTheme.typography.bodySmall)
             }
             Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(onClick = onRefreshShizuku, modifier = Modifier.weight(1f)) { Text("Refresh Shizuku") }
+                Button(onClick = onRequestShizukuPermission, modifier = Modifier.weight(1f)) { Text("Grant Permission") }
+            }
+            Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 Button(onClick = onRequestRoot, modifier = Modifier.weight(1f)) { Text("Request root") }
                 Button(onClick = onCheckUinput, modifier = Modifier.weight(1f)) { Text("Check /dev/uinput") }
