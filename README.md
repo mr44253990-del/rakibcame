@@ -12,6 +12,8 @@ It provides:
 - Xbox-style layout preview
 - Mapping profiles saved with Room
 - Foreground service toggle for compatibility mode
+- Root / SU readiness check for broader game compatibility
+- `/dev/uinput` access diagnostic button
 - Live trace panel showing what the app is doing
 - Remove-all-registered mappings option
 
@@ -50,12 +52,17 @@ So this build is designed as:
 6. Save more mappings
 7. Turn service ON for compatibility mode
 
-## Future root version
+## Root / Sui path
 
-If you later want a true game-facing virtual Xbox output layer, the next step would be:
-- root device support
-- `/dev/uinput`
-- native virtual HID output
+If you want the mapper to behave more like a controller outside the app, the practical next step is:
+- Magisk root or Sui / Shizuku root backend
+- writable `/dev/uinput`
+- native virtual HID output layer
+
+This build now includes:
+- root permission request trigger through `su`
+- `/dev/uinput` writable diagnostic
+- root-ready service mode toggle
 
 ## Notes
 

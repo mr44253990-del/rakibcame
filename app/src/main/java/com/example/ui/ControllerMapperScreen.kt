@@ -43,6 +43,8 @@ import com.example.data.ControllerProfile
 @Composable
 fun ControllerMapperScreen(viewModel: ControllerMapperViewModel) {
     val serviceEnabled by viewModel.serviceEnabled.collectAsState()
+    val rootModeEnabled by viewModel.rootModeEnabled.collectAsState()
+    val rootStatus by viewModel.rootStatus.collectAsState()
     val status by viewModel.status.collectAsState()
     val devices by viewModel.connectedDevices.collectAsState()
     val profiles by viewModel.profiles.collectAsState()
@@ -68,6 +70,15 @@ fun ControllerMapperScreen(viewModel: ControllerMapperViewModel) {
             ServiceCard(
                 enabled = serviceEnabled,
                 onToggle = viewModel::setServiceEnabled
+            )
+        }
+        item {
+            RootCard(
+                rootModeEnabled = rootModeEnabled,
+                rootStatus = rootStatus,
+                onRootModeToggle = viewModel::setRootModeEnabled,
+                onRequestRoot = viewModel::requestRootAccess,
+                onCheckUinput = viewModel::checkUinputAccess
             )
         }
         item {
@@ -167,13 +178,51 @@ private fun ServiceCard(enabled: Boolean, onToggle: (Boolean) -> Unit) {
 }
 
 @Composable
+private fun RootCard(
+    rootModeEnabled: Boolean,
+    rootStatus: String,
+    onRootModeToggle: (Boolean) -> Unit,
+    onRequestRoot: () -> Unit,
+    onCheckUinput: () -> Unit
+) {
+    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF111827))) {
+        Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Root / Sui readiness", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text(
+                        "এটা Magisk/SU prompt trigger করবে। Root mode ON করলেও true system-wide Xbox output-এর জন্য native uinput backend দরকার.",
+                        color = Color(0xFF94A3B8),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                Switch(checked = rootModeEnabled, onCheckedChange = onRootModeToggle)
+            }
+            Spacer(Modifier.height(8.dp))
+            SelectionContainer {
+                Text(rootStatus, color = Color(0xFF93C5FD), style = MaterialTheme.typography.bodySmall)
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(onClick = onRequestRoot, modifier = Modifier.weight(1f)) { Text("Request root") }
+                Button(onClick = onCheckUinput, modifier = Modifier.weight(1f)) { Text("Check /dev/uinput") }
+            }
+        }
+    }
+}
+
+@Composable
 private fun CompatibilityCard() {
     Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))) {
         Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
             Text("Important note", color = Color.White, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(6.dp))
             Text(
-                "Stock Android non-root mode-এ এই app mapping, preview, input monitoring, profile service, এবং common compatibility workflow দেয়। Real system-wide virtual Xbox HID output সাধারণত root/uinput ছাড়া সীমিত।",
+                "Stock Android non-root mode-এ এই app mapping, preview, input monitoring, profile service, এবং common compatibility workflow দেয়। অন্য app বা গেমে Xbox-এর মতো behave করাতে root/Sui + /dev/uinput backend সাধারণত দরকার হয়।",
                 color = Color(0xFFCBD5E1)
             )
         }

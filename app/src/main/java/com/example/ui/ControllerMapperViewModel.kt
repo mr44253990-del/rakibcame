@@ -16,6 +16,7 @@ import com.example.data.AppDatabase
 import com.example.data.ButtonMapping
 import com.example.data.ControllerProfile
 import com.example.service.ControllerMapperService
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -58,6 +60,12 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
 
     private val _serviceEnabled = MutableStateFlow(prefs.getBoolean("SERVICE_ENABLED", false))
     val serviceEnabled: StateFlow<Boolean> = _serviceEnabled.asStateFlow()
+
+    private val _rootModeEnabled = MutableStateFlow(prefs.getBoolean("ROOT_MODE_ENABLED", false))
+    val rootModeEnabled: StateFlow<Boolean> = _rootModeEnabled.asStateFlow()
+
+    private val _rootStatus = MutableStateFlow("Root / Sui backend not checked yet.")
+    val rootStatus: StateFlow<String> = _rootStatus.asStateFlow()
 
     private val _status = MutableStateFlow("Compatibility mode ready.")
     val status: StateFlow<String> = _status.asStateFlow()
@@ -95,7 +103,7 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
         }
         addTrace(
             title = "App started",
-            details = "USB compatibility mapper চালু হয়েছে। Stock Android non-root mode এ real virtual Xbox HID output সীমিত।",
+            details = "USB compatibility mapper চালু হয়েছে। Stock Android non-root mode এ real virtual Xbox HID output সীমিত। Root/Sui backend later required for broader game compatibility.",
             level = "info"
         )
     }
@@ -169,10 +177,15 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
         _serviceEnabled.value = enabled
         val intent = Intent(context, ControllerMapperService::class.java).apply {
             action = if (enabled) ControllerMapperService.ACTION_START else ControllerMapperService.ACTION_STOP
+            putExtra("root_mode", _rootModeEnabled.value)
         }
         if (enabled) {
             ContextCompat.startForegroundService(context, intent)
-            _status.value = "Service started. Keep this app active for live input capture in non-root mode."
+            _status.value = if (_rootModeEnabled.value) {
+                "Service started with root-ready mode requested."
+            } else {
+                "Service started. Keep this app active for live input capture in non-root mode."
+            }
             addTrace("Service ON", "Foreground compatibility service চালু হয়েছে।", "info")
         } else {
             context.startService(intent)
@@ -196,6 +209,33 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
                 )
             }
         _connectedDevices.value = devices
+    }
+
+    fun setRootModeEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("ROOT_MODE_ENABLED", enabled).apply()
+        _rootModeEnabled.value = enabled
+        _status.value = if (enabled) "Root-ready mode enabled. Grant superuser permission when prompted." else "Root-ready mode disabled."
+        addTrace("Root mode", if (enabled) "Root-ready mode enabled" else "Root-ready mode disabled", "info")
+    }
+
+    fun requestRootAccess() {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runRootCommand("id")
+            }
+            _rootStatus.value = result
+            addTrace("Root check", result, if (result.contains("uid=0")) "success" else "error")
+        }
+    }
+
+    fun checkUinputAccess() {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runRootCommand("if [ -w /dev/uinput ]; then echo UINPUT_WRITABLE; else echo UINPUT_BLOCKED; fi")
+            }
+            _rootStatus.value = result
+            addTrace("uinput check", result, if (result.contains("UINPUT_WRITABLE")) "success" else "error")
+        }
     }
 
     fun onControllerKeyEvent(event: KeyEvent): Boolean {
@@ -261,6 +301,19 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
             _status.value = "Detected: ${it.label}"
         }
         return activeInputs.isNotEmpty()
+    }
+
+    private fun runRootCommand(command: String): String {
+        return try {
+            val process = ProcessBuilder("su", "-c", command)
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().readText().trim()
+            val exit = process.waitFor()
+            if (exit == 0) output.ifBlank { "Root command succeeded." } else "Root command failed (exit=$exit): ${output.ifBlank { "no output" }}"
+        } catch (t: Throwable) {
+            "Root request failed: ${t.message ?: "unknown error"}"
+        }
     }
 
     private fun collectAxis(
