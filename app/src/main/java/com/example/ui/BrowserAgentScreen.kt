@@ -12,21 +12,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.ColumnScope.weight as columnWeight
-import androidx.compose.foundation.layout.RowScope.weight as rowWeight
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -47,6 +33,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Divider
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -85,6 +72,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.coroutines.resume
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
     val context = LocalContext.current
@@ -188,7 +176,7 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(Modifier.width(8.dp))
-                        Column(modifier = Modifier.rowWeight(1f, fill = false)) {
+                        Column(modifier = Modifier.weight(1f, fill = false)) {
                             Text(
                                 text = "${index + 1}. ${tab.title}",
                                 color = Color.White,
@@ -240,7 +228,7 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
                     }
                 }
 
-                Box(modifier = Modifier.columnWeight(1f).padding(12.dp)) {
+                Box(modifier = Modifier.weight(1f).padding(12.dp)) {
                     when (sidePanelIndex) {
                         0 -> ChatPanel(chatMessages = chat)
                         1 -> MemoryPanel(memories = memories, clipboard = clipboard)
@@ -280,7 +268,7 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
             Spacer(Modifier.width(12.dp))
 
             Card(
-                modifier = Modifier.rowWeight(1f).fillMaxHeight(),
+                modifier = Modifier.weight(1f).fillMaxHeight(),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF020617))
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
@@ -292,7 +280,7 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
 
                     Box(
                         modifier = Modifier
-                            .columnWeight(1f)
+                            .weight(1f)
                             .fillMaxWidth()
                             .padding(horizontal = 12.dp)
                             .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(16.dp))
