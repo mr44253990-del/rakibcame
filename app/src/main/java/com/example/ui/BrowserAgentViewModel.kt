@@ -1,6 +1,7 @@
 package com.example.ui
 
 import android.app.Application
+import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.BuildConfig
@@ -8,6 +9,7 @@ import com.example.data.ActionLog
 import com.example.data.AgentMemory
 import com.example.data.AgentRepository
 import com.example.data.AppDatabase
+import com.example.data.ChatSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,6 +17,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -24,6 +28,9 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -69,7 +76,9 @@ data class BrowserAction(
     val text: String? = null,
     val waitMs: Long? = null,
     val background: Boolean = false,
-    val saveAs: String? = null
+    val saveAs: String? = null,
+    val stepNumber: Int = 0,
+    val totalSteps: Int = 0
 )
 
 data class PlanPreview(
@@ -84,9 +93,17 @@ data class PlannerResult(
     val memories: List<Pair<String, String>> = emptyList()
 )
 
+data class ThinkingEntry(
+    val id: String = UUID.randomUUID().toString(),
+    val title: String,
+    val details: String,
+    val status: String,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
 class BrowserAgentViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = AgentRepository(AppDatabase.getInstance(application).agentDao())
-    private val prefs = application.getSharedPreferences("browser_agent_prefs", android.content.Context.MODE_PRIVATE)
+    private val prefs = application.getSharedPreferences("browser_agent_prefs", Context.MODE_PRIVATE)
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
@@ -110,16 +127,6 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
     private val _pageSnapshots = MutableStateFlow<Map<String, PageSnapshot>>(emptyMap())
     val pageSnapshots: StateFlow<Map<String, PageSnapshot>> = _pageSnapshots.asStateFlow()
 
-    private val _chatMessages = MutableStateFlow(
-        listOf(
-            ChatMessage(
-                role = ChatRole.ASSISTANT,
-                text = "Hi. I can open pages, switch tabs, read visible text, click CSS selectors, type values, retry selector actions, keep memory, and show action history with live preview updates. I will not automate temp-mail, account creation, or verification bypass workflows."
-            )
-        )
-    )
-    val chatMessages: StateFlow<List<ChatMessage>> = _chatMessages.asStateFlow()
-
     private val _clipboard = MutableStateFlow<Map<String, String>>(emptyMap())
     val clipboard: StateFlow<Map<String, String>> = _clipboard.asStateFlow()
 
@@ -131,6 +138,9 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
 
     private val _browserCommands = MutableSharedFlow<BrowserAction>(extraBufferCapacity = 64)
     val browserCommands = _browserCommands.asSharedFlow()
+
+    private val _thinkingEntries = MutableStateFlow<List<ThinkingEntry>>(emptyList())
+    val thinkingEntries: StateFlow<List<ThinkingEntry>> = _thinkingEntries.asStateFlow()
 
     private val _aiApiKey = MutableStateFlow(loadStoredApiKey())
     val aiApiKey: StateFlow<String> = _aiApiKey.asStateFlow()
@@ -150,17 +160,78 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
     private val _retryCount = MutableStateFlow(prefs.getInt("RETRY_COUNT", 3).coerceIn(1, 5))
     val retryCount: StateFlow<Int> = _retryCount.asStateFlow()
 
-    val memories = repository.memories.stateIn(
+    private val _currentSessionId = MutableStateFlow(
+        prefs.getString("CURRENT_SESSION_ID", null) ?: generateSessionId()
+    )
+    val currentSessionId: StateFlow<String> = _currentSessionId.asStateFlow()
+
+    val sessions: StateFlow<List<ChatSession>> = repository.observeSessions().stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
         emptyList()
     )
 
-    val logs = repository.logs.stateIn(
-        viewModelScope,
-        SharingStarted.WhileSubscribed(5_000),
-        emptyList()
-    )
+    val chatMessages: StateFlow<List<ChatMessage>> = _currentSessionId.flatMapLatest { sessionId ->
+        repository.observeChatRecords(sessionId).map { records ->
+            records.map {
+                ChatMessage(
+                    id = it.id.toString(),
+                    role = runCatching { ChatRole.valueOf(it.role) }.getOrDefault(ChatRole.SYSTEM),
+                    text = it.text,
+                    createdAt = it.createdAt
+                )
+            }
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val memories: StateFlow<List<AgentMemory>> = _currentSessionId.flatMapLatest { sessionId ->
+        repository.observeMemories(sessionId)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val logs: StateFlow<List<ActionLog>> = _currentSessionId.flatMapLatest { sessionId ->
+        repository.observeLogs(sessionId)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    init {
+        bootstrapSession(_currentSessionId.value)
+    }
+
+    private fun generateSessionId(): String = "session-${System.currentTimeMillis()}"
+
+    private fun defaultSessionTitle(): String {
+        return "New Chat ${SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())}"
+    }
+
+    private fun bootstrapSession(sessionId: String) {
+        viewModelScope.launch {
+            repository.ensureSession(sessionId, defaultSessionTitle())
+            val welcomeKey = "WELCOME_$sessionId"
+            if (!prefs.getBoolean(welcomeKey, false)) {
+                repository.addChatRecord(
+                    sessionId,
+                    ChatRole.ASSISTANT.name,
+                    "হাই। আমি ধাপে ধাপে কাজ করতে পারি, একাধিক টাস্ক সিরিয়ালি চালাতে পারি, ওয়েবপেজের লেখা পড়ে বাংলায় বুঝিয়ে বলতে পারি, আর যে কাজ করি সেটা আপনাকে চ্যাটে জানাই।"
+                )
+                prefs.edit().putBoolean(welcomeKey, true).apply()
+            }
+        }
+    }
+
+    fun createNewSession() {
+        val sessionId = generateSessionId()
+        prefs.edit().putString("CURRENT_SESSION_ID", sessionId).apply()
+        _currentSessionId.value = sessionId
+        _thinkingEntries.value = emptyList()
+        _clipboard.value = emptyMap()
+        bootstrapSession(sessionId)
+    }
+
+    fun switchSession(sessionId: String) {
+        prefs.edit().putString("CURRENT_SESSION_ID", sessionId).apply()
+        _currentSessionId.value = sessionId
+        _thinkingEntries.value = emptyList()
+        bootstrapSession(sessionId)
+    }
 
     private fun loadStoredApiKey(): String {
         val stored = prefs.getString("AI_API_KEY", null).orEmpty().trim()
@@ -222,6 +293,10 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
         _clipboard.value = _clipboard.value + (cleanAlias to value)
     }
 
+    fun clearThinking() {
+        _thinkingEntries.value = emptyList()
+    }
+
     fun testAiConfig() {
         viewModelScope.launch {
             _aiStatus.value = "Testing AI connection…"
@@ -240,6 +315,7 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
             "docs" -> viewModelScope.launch { _browserCommands.emit(BrowserAction(kind = "new_tab", url = "https://docs.mistral.ai", background = false)) }
             "clear_clipboard" -> clearClipboard()
             "clear_history" -> clearHistory()
+            "new_chat" -> createNewSession()
         }
     }
 
@@ -247,17 +323,17 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
         val prompt = rawPrompt.trim()
         if (prompt.isEmpty()) return
 
-        addChat(ChatRole.USER, prompt)
-
-        if (looksUnsafe(prompt)) {
-            addChat(
-                ChatRole.ASSISTANT,
-                "আমি temp-mail, account signup/login automation, verification code scraping, বা third-party abuse workflow বানাতে সাহায্য করতে পারি না। তবে safe generic browser-agent feature তৈরি করা আছে—নিজের অনুমোদিত সাইটে open/click/type/extract/history/memory ব্যবহার করতে পারবেন।"
-            )
-            return
-        }
-
         viewModelScope.launch {
+            addChatSuspend(ChatRole.USER, prompt)
+
+            if (looksUnsafe(prompt)) {
+                addChatSuspend(
+                    ChatRole.ASSISTANT,
+                    "আমি temporary email, OTP/verification scraping, account abuse, বা bypass workflow তৈরি করতে সাহায্য করতে পারি না। তবে generic browsing, reading, click, type, copy, extract, summary, history, memory এবং ধাপে ধাপে safe automation করতে পারি।"
+                )
+                return@launch
+            }
+
             _isWorking.value = true
             try {
                 handlePrompt(prompt)
@@ -268,29 +344,31 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
     }
 
     private suspend fun handlePrompt(prompt: String) {
+        if (handlePageInsightPrompt(prompt)) return
+
         parseRememberCommand(prompt)?.let { (title, content) ->
-            repository.addMemory(title, content)
-            addChat(ChatRole.ASSISTANT, "Saved to memory: $title")
+            repository.addMemory(_currentSessionId.value, title, content)
+            addChatSuspend(ChatRole.ASSISTANT, "মেমোরিতে সেভ করেছি: $title")
             return
         }
 
         val localActions = parseLocalActions(prompt)
         if (localActions.isNotEmpty()) {
             _planPreview.value = PlanPreview(
-                summary = "Local command plan",
+                summary = "ধাপে ধাপে লোকাল কমান্ড প্ল্যান তৈরি হয়েছে।",
                 actions = localActions
             )
             queueActions(localActions)
-            addChat(ChatRole.ASSISTANT, buildQueuedMessage(localActions))
+            addChatSuspend(ChatRole.ASSISTANT, buildQueuedMessage(localActions))
             return
         }
 
         val apiKey = effectiveApiKey()
         if (apiKey.isBlank()) {
             _aiStatus.value = "Missing API key. Open Settings and save your AI config."
-            addChat(
+            addChatSuspend(
                 ChatRole.ASSISTANT,
-                "Complex planning needs a Mistral API key. Open Settings in the app, add API key/model/base URL, save, then try again."
+                "AI planner ব্যবহার করতে Settings ট্যাবে গিয়ে API key, model, base URL save করুন।"
             )
             return
         }
@@ -299,32 +377,77 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
         val result = withContext(Dispatchers.IO) { planWithMistral(prompt, apiKey) }
         when (result.status.lowercase()) {
             "ok" -> {
-                result.memories.forEach { (title, content) -> repository.addMemory(title, content) }
+                result.memories.forEach { (title, content) -> repository.addMemory(_currentSessionId.value, title, content) }
                 _planPreview.value = PlanPreview(result.message, result.actions)
                 queueActions(result.actions)
                 _aiStatus.value = "AI plan ready with ${result.actions.size} action(s)."
-                addChat(ChatRole.ASSISTANT, result.message.ifBlank { buildQueuedMessage(result.actions) })
+                addChatSuspend(ChatRole.ASSISTANT, result.message.ifBlank { buildQueuedMessage(result.actions) })
             }
             "refuse", "needs_user" -> {
                 _planPreview.value = PlanPreview(result.message, emptyList())
                 _aiStatus.value = result.message
-                addChat(ChatRole.ASSISTANT, result.message)
+                addChatSuspend(ChatRole.ASSISTANT, result.message)
             }
             else -> {
                 _aiStatus.value = result.message
-                addChat(ChatRole.ASSISTANT, result.message.ifBlank { "Planner returned an unexpected response." })
+                addChatSuspend(ChatRole.ASSISTANT, result.message.ifBlank { "Planner returned an unexpected response." })
             }
         }
     }
 
+    private suspend fun handlePageInsightPrompt(prompt: String): Boolean {
+        val lowered = prompt.lowercase()
+        val summaryRequest = listOf(
+            "details", "detail", "summarize", "summary", "what is on this page",
+            "ডিটেলস", "ডিটেল", "সামারি", "সংক্ষেপ", "এই ওয়েবসাইটে", "এই ওয়েবসাইটে", "এই পেইজে"
+        ).any { it in lowered }
+        if (!summaryRequest) return false
+
+        val snapshot = _pageSnapshots.value[_activeTabId.value]
+        if (snapshot == null) {
+            addChatSuspend(ChatRole.ASSISTANT, "এখনও কোন page preview পাইনি। আগে একটি ওয়েবসাইট খুলুন বা refresh করুন।")
+            return true
+        }
+
+        val important = snapshot.interactive.take(6).joinToString("\n") {
+            "• ${it.label.ifBlank { it.type }}"
+        }
+        val text = buildString {
+            appendLine("এই ওয়েবসাইটের তথ্য:")
+            appendLine("শিরোনাম: ${snapshot.title}")
+            appendLine("লিংক: ${snapshot.url}")
+            appendLine("সংক্ষেপ: ${snapshot.excerpt.take(700)}")
+            if (important.isNotBlank()) {
+                appendLine("দেখা যাওয়া গুরুত্বপূর্ণ আইটেম:")
+                appendLine(important)
+            }
+        }.trim()
+        addChatSuspend(ChatRole.ASSISTANT, text)
+        addThinking("পৃষ্ঠা বিশ্লেষণ", text.take(500), "success")
+        return true
+    }
+
     private suspend fun queueActions(actions: List<BrowserAction>) {
-        actions.forEach { action -> _browserCommands.emit(withDefaultTab(action)) }
+        val queued = actions.mapIndexed { index, action ->
+            action.copy(stepNumber = index + 1, totalSteps = actions.size)
+        }
+        queued.forEach { action -> _browserCommands.emit(withDefaultTab(action)) }
     }
 
     private fun withDefaultTab(action: BrowserAction): BrowserAction {
         if (action.kind == "new_tab") return action
         if (action.tabId != null) return action
         return action.copy(tabId = _activeTabId.value)
+    }
+
+    fun onBrowserActionStarted(action: BrowserAction) {
+        val message = buildStepMessage(action)
+        addThinking(
+            title = message,
+            details = actionDebug(action),
+            status = "running"
+        )
+        addChat(ChatRole.SYSTEM, message)
     }
 
     fun createTab(url: String = "https://example.com", activate: Boolean = true): String {
@@ -387,55 +510,103 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
         viewModelScope.launch {
             val tabId = action.tabId ?: _activeTabId.value
             repository.addLog(
-                tabId = tabId,
-                actionType = action.kind,
-                summary = if (ok) message else "Failed: $message"
+                _currentSessionId.value,
+                tabId,
+                action.kind,
+                if (ok) message else "Failed: $message"
             )
 
             if (!action.saveAs.isNullOrBlank() && !extractedText.isNullOrBlank()) {
                 addClipboardItem(action.saveAs, extractedText)
-                addChat(ChatRole.SYSTEM, "Copied value to {{${action.saveAs}}}")
+                addChatSuspend(ChatRole.SYSTEM, "কপি করা ভ্যালু {{${action.saveAs}}} নামে সেভ হয়েছে।")
+                addChatSuspend(ChatRole.ASSISTANT, "কপি করা লেখা:\n$extractedText")
+            } else if (!extractedText.isNullOrBlank()) {
+                addChatSuspend(ChatRole.ASSISTANT, "পাওয়া লেখা:\n$extractedText")
             }
 
-            if (!ok) {
-                addChat(ChatRole.ASSISTANT, message)
+            val finalMessage = if (ok) {
+                "ধাপ ${action.stepNumber.takeIf { it > 0 } ?: 1} সফল: ${translateResultMessage(action, message)}"
+            } else {
+                "ধাপ ${action.stepNumber.takeIf { it > 0 } ?: 1} ব্যর্থ: ${translateResultMessage(action, message)}"
             }
+
+            addThinking(
+                title = finalMessage,
+                details = if (!extractedText.isNullOrBlank()) extractedText.take(600) else message,
+                status = if (ok) "success" else "error"
+            )
+            addChatSuspend(ChatRole.SYSTEM, finalMessage)
         }
     }
 
     fun clearHistory() {
         viewModelScope.launch {
-            repository.clearLogs()
-            addChat(ChatRole.SYSTEM, "History cleared.")
+            repository.clearLogs(_currentSessionId.value)
+            addChatSuspend(ChatRole.SYSTEM, "এই চ্যাটের action history clear করা হয়েছে।")
         }
+    }
+
+    private fun addThinking(title: String, details: String, status: String) {
+        val entry = ThinkingEntry(title = title, details = details, status = status)
+        _thinkingEntries.value = (listOf(entry) + _thinkingEntries.value).take(60)
     }
 
     private fun addChat(role: ChatRole, text: String) {
-        _chatMessages.value = _chatMessages.value + ChatMessage(role = role, text = text)
+        viewModelScope.launch { addChatSuspend(role, text) }
+    }
+
+    private suspend fun addChatSuspend(role: ChatRole, text: String) {
+        val sessionId = _currentSessionId.value
+        val existingTitle = sessions.value.firstOrNull { it.id == sessionId }?.title.orEmpty()
+        if (role == ChatRole.USER && (existingTitle.isBlank() || existingTitle.startsWith("New Chat"))) {
+            repository.touchSession(sessionId, text.take(30))
+        } else {
+            repository.touchSession(sessionId, existingTitle.ifBlank { defaultSessionTitle() })
+        }
+        repository.addChatRecord(sessionId, role.name, text)
     }
 
     private fun buildQueuedMessage(actions: List<BrowserAction>): String {
-        if (actions.isEmpty()) return "No actions queued."
+        if (actions.isEmpty()) return "কোন action queue হয়নি।"
         return buildString {
-            append("Queued ")
+            append("আমি ধাপে ধাপে ")
             append(actions.size)
-            append(" action")
-            if (actions.size > 1) append("s")
-            append(": ")
-            append(actions.joinToString(" → ") { it.kind })
-        }
+            append("টি কাজ করব।\n")
+            actions.forEachIndexed { index, action ->
+                append(index + 1)
+                append(". ")
+                append(actionLabelBangla(action))
+                append('\n')
+            }
+        }.trim()
     }
 
     private fun parseRememberCommand(prompt: String): Pair<String, String>? {
         val lowered = prompt.lowercase()
-        if (!lowered.startsWith("remember ") && !lowered.startsWith("save memory ")) return null
+        if (!lowered.startsWith("remember ") && !lowered.startsWith("save memory ") && !lowered.startsWith("মনে রাখো ")) return null
         val content = prompt.substringAfter(' ').substringAfter(' ').trim().ifBlank { return null }
         val title = content.take(40)
         return title to content
     }
 
     private fun parseLocalActions(prompt: String): List<BrowserAction> {
-        val lowered = prompt.lowercase()
+        val segments = splitPromptIntoSteps(prompt)
+        if (segments.size > 1) {
+            return segments.flatMap { parseSingleAction(it) }
+        }
+        return parseSingleAction(prompt)
+    }
+
+    private fun splitPromptIntoSteps(prompt: String): List<String> {
+        return prompt
+            .replace("\n", " then ")
+            .split(Regex("(?i)\\bthen\\b|তারপর|এরপর|পরে"))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+    }
+
+    private fun parseSingleAction(prompt: String): List<BrowserAction> {
+        val lowered = prompt.trim().lowercase()
         val actions = mutableListOf<BrowserAction>()
 
         if (lowered.startsWith("open background ") || lowered.startsWith("background tab ")) {
@@ -449,6 +620,7 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
                 lowered.startsWith("open ") ||
                 lowered.startsWith("visit ") ||
                 lowered.startsWith("go to ") ||
+                lowered.startsWith("ওপেন ") ||
                 lowered == url.lowercase()
             ) {
                 actions += BrowserAction(kind = "open_url", url = normalizeUrl(url))
@@ -456,8 +628,8 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
             }
         }
 
-        if (lowered.startsWith("search ")) {
-            val query = prompt.substringAfter("search ").trim()
+        if (lowered.startsWith("search ") || lowered.startsWith("খুঁজো ")) {
+            val query = prompt.substringAfter(' ').trim()
             if (query.isNotBlank()) {
                 actions += BrowserAction(
                     kind = "open_url",
@@ -467,44 +639,60 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
             }
         }
 
-        if (lowered == "back" || lowered.contains("go back")) {
+        if (lowered == "back" || lowered.contains("go back") || lowered.contains("পেছনে")) {
             actions += BrowserAction(kind = "back")
         }
-        if (lowered == "forward" || lowered.contains("go forward")) {
+        if (lowered == "forward" || lowered.contains("go forward") || lowered.contains("সামনে যাও")) {
             actions += BrowserAction(kind = "forward")
         }
-        if (lowered == "refresh" || lowered.contains("reload")) {
+        if (lowered == "refresh" || lowered.contains("reload") || lowered.contains("রিফ্রেশ")) {
             actions += BrowserAction(kind = "refresh")
         }
-        if (lowered.startsWith("new tab")) {
+        if (lowered.startsWith("new tab") || lowered.startsWith("নতুন ট্যাব")) {
             val url = extractUrl(prompt)?.let(::normalizeUrl)
             actions += BrowserAction(kind = "new_tab", url = url)
         }
-        if (lowered.startsWith("close tab")) {
+        if (lowered.startsWith("close tab") || lowered.startsWith("ট্যাব বন্ধ")) {
             actions += BrowserAction(kind = "close_tab")
         }
-        if (lowered.startsWith("switch tab ")) {
-            val index = lowered.removePrefix("switch tab ").trim().toIntOrNull()
-            val target = index?.minus(1)?.let { i -> _tabs.value.getOrNull(i)?.id }
+        if (lowered.startsWith("switch tab ") || lowered.startsWith("ট্যাব বদলাও ")) {
+            val raw = lowered.substringAfterLast(' ').trim().toIntOrNull()
+            val target = raw?.minus(1)?.let { i -> _tabs.value.getOrNull(i)?.id }
             if (target != null) actions += BrowserAction(kind = "switch_tab", tabId = target)
         }
-        if (lowered.startsWith("extract ")) {
-            val selector = prompt.substringAfter("extract ").substringBefore(" as ").trim()
+        if (lowered.startsWith("extract page") || lowered.startsWith("copy page") || lowered.startsWith("পেইজ কপি")) {
+            val alias = prompt.substringAfter(" as ", "page_text").trim().ifBlank { "page_text" }
+            actions += BrowserAction(kind = "extract_page_text", saveAs = alias)
+        } else if (lowered.startsWith("extract ") || lowered.startsWith("copy ")) {
+            val selector = prompt.substringAfter(' ').substringBefore(" as ").trim()
             val alias = prompt.substringAfter(" as ", "").trim().ifBlank { null }
             if (selector.isNotBlank()) actions += BrowserAction(kind = "extract_text", selector = selector, saveAs = alias)
         }
-        if (lowered.startsWith("click ")) {
-            val selector = prompt.substringAfter("click ").trim()
+        if (lowered.startsWith("click ") || lowered.startsWith("ক্লিক ")) {
+            val selector = prompt.substringAfter(' ').trim()
             if (selector.isNotBlank()) actions += BrowserAction(kind = "click", selector = selector)
         }
-        if (lowered.startsWith("type ")) {
-            val pieces = prompt.substringAfter("type ").split(" into ", limit = 2)
+        if (lowered.startsWith("type ") || lowered.startsWith("লিখো ")) {
+            val body = prompt.substringAfter(' ')
+            val pieces = body.split(" into ", limit = 2)
             if (pieces.size == 2) {
                 actions += BrowserAction(kind = "type", text = pieces[0].trim(), selector = pieces[1].trim())
             }
         }
-        if (lowered.startsWith("wait ")) {
-            val seconds = lowered.removePrefix("wait ").substringBefore(' ').trim().toLongOrNull()
+        if (lowered.startsWith("scroll down") || lowered.contains("নিচে স্ক্রল")) {
+            actions += BrowserAction(kind = "scroll", text = "down")
+        }
+        if (lowered.startsWith("scroll up") || lowered.contains("উপরে স্ক্রল")) {
+            actions += BrowserAction(kind = "scroll", text = "up")
+        }
+        if (lowered.startsWith("scroll top")) {
+            actions += BrowserAction(kind = "scroll", text = "top")
+        }
+        if (lowered.startsWith("scroll bottom")) {
+            actions += BrowserAction(kind = "scroll", text = "bottom")
+        }
+        if (lowered.startsWith("wait ") || lowered.startsWith("অপেক্ষা ")) {
+            val seconds = lowered.substringAfter(' ').substringBefore(' ').trim().toLongOrNull()
             if (seconds != null) actions += BrowserAction(kind = "wait", waitMs = seconds * 1000L)
         }
 
@@ -630,17 +818,20 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
                 - click {"kind":"click","selector":"button.primary","tabId":"tab-1"}
                 - type {"kind":"type","selector":"input[name='q']","text":"hello","tabId":"tab-1"}
                 - extract_text {"kind":"extract_text","selector":"h1","saveAs":"headline","tabId":"tab-1"}
+                - extract_page_text {"kind":"extract_page_text","saveAs":"page_text","tabId":"tab-1"}
+                - scroll {"kind":"scroll","text":"down","tabId":"tab-1"}
                 - back / forward / refresh / close_tab / wait
 
                 Use CSS selectors only.
                 Use {{alias}} placeholders inside type.text if an earlier extract_text saved a value.
                 Prefer short plans, and use wait when a page needs time before interaction.
                 Keep plans concrete, safe, and resilient.
+                When the user asks for multiple steps, return them in the right order.
 
                 Response shape:
                 {
                   "status":"ok",
-                  "message":"brief summary",
+                  "message":"brief summary in Bengali or simple English",
                   "actions":[...],
                   "memories":[{"title":"optional","content":"optional"}]
                 }
@@ -797,7 +988,8 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
         return runCatching {
             val root = JSONObject(body)
             root.optJSONObject("error")?.optString("message")
-                ?: root.optString("message")
+                ?.takeIf { it.isNotBlank() }
+                ?: root.optString("message").takeIf { it.isNotBlank() }
                 ?: body.take(140)
         }.getOrDefault(body.take(140))
     }
@@ -813,5 +1005,52 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
             Interactive elements:
             $nodes
         """.trimIndent()
+    }
+
+    private fun buildStepMessage(action: BrowserAction): String {
+        val prefix = if (action.totalSteps > 0) "ধাপ ${action.stepNumber}/${action.totalSteps}" else "ধাপ"
+        return "$prefix: ${actionLabelBangla(action)}"
+    }
+
+    private fun actionLabelBangla(action: BrowserAction): String {
+        return when (action.kind) {
+            "open_url" -> "ওয়েবসাইট খুলছি ${action.url.orEmpty()}"
+            "new_tab" -> if (action.background) "background tab খুলছি ${action.url.orEmpty()}" else "নতুন tab খুলছি ${action.url.orEmpty()}"
+            "switch_tab" -> "অন্য tab-এ যাচ্ছি"
+            "close_tab" -> "বর্তমান tab বন্ধ করছি"
+            "back" -> "পেছনের পেইজে ফিরছি"
+            "forward" -> "পরের পেইজে যাচ্ছি"
+            "refresh" -> "পেইজ refresh করছি"
+            "click" -> "selector click করছি: ${action.selector.orEmpty()}"
+            "type" -> "লেখা বসাচ্ছি: ${action.selector.orEmpty()}"
+            "extract_text" -> "নির্দিষ্ট লেখা কপি করছি: ${action.selector.orEmpty()}"
+            "extract_page_text" -> "পেইজের লেখা কপি করছি"
+            "scroll" -> "স্ক্রল করছি ${action.text.orEmpty()}"
+            "wait" -> "অপেক্ষা করছি ${(action.waitMs ?: 0L) / 1000} সেকেন্ড"
+            else -> action.kind
+        }
+    }
+
+    private fun actionDebug(action: BrowserAction): String {
+        return when (action.kind) {
+            "click" -> "document.querySelector('${action.selector.orEmpty()}')?.click()"
+            "type" -> "document.querySelector('${action.selector.orEmpty()}').value = '${action.text.orEmpty()}'"
+            "extract_text" -> "document.querySelector('${action.selector.orEmpty()}').innerText"
+            "extract_page_text" -> "document.body.innerText"
+            "scroll" -> "window.scrollBy(...) // ${action.text.orEmpty()}"
+            "open_url" -> "webView.loadUrl('${action.url.orEmpty()}')"
+            else -> action.kind
+        }
+    }
+
+    private fun translateResultMessage(action: BrowserAction, message: String): String {
+        return when (action.kind) {
+            "extract_text", "extract_page_text" -> "লেখা সংগ্রহ করা হয়েছে।"
+            "click" -> "ক্লিক সম্পন্ন হয়েছে।"
+            "type" -> "লেখা বসানো হয়েছে।"
+            "scroll" -> "স্ক্রল সম্পন্ন হয়েছে।"
+            "open_url" -> "ওয়েবসাইট লোড করা হয়েছে।"
+            else -> message
+        }
     }
 }

@@ -6,8 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 
 @Database(
-    entities = [AgentMemory::class, ActionLog::class],
-    version = 1,
+    entities = [ChatSession::class, ChatRecord::class, AgentMemory::class, ActionLog::class],
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

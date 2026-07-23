@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.data.ActionLog
 import com.example.data.AgentMemory
+import com.example.data.ChatSession
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONArray
@@ -85,11 +86,14 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
     val activeTabId by viewModel.activeTabId.collectAsState()
     val snapshots by viewModel.pageSnapshots.collectAsState()
     val chat by viewModel.chatMessages.collectAsState()
+    val sessions by viewModel.sessions.collectAsState()
+    val currentSessionId by viewModel.currentSessionId.collectAsState()
     val memories by viewModel.memories.collectAsState()
     val logs by viewModel.logs.collectAsState()
     val clipboard by viewModel.clipboard.collectAsState()
     val plan by viewModel.planPreview.collectAsState()
     val isWorking by viewModel.isWorking.collectAsState()
+    val thinkingEntries by viewModel.thinkingEntries.collectAsState()
     val aiApiKey by viewModel.aiApiKey.collectAsState()
     val aiModel by viewModel.aiModel.collectAsState()
     val aiBaseUrl by viewModel.aiBaseUrl.collectAsState()
@@ -123,6 +127,7 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
 
     LaunchedEffect(Unit) {
         viewModel.browserCommands.collect { action ->
+            viewModel.onBrowserActionStarted(action)
             val result = runtime.execute(action, viewModel)
             viewModel.onBrowserActionResult(action, result.ok, result.message, result.extractedText)
         }
@@ -137,7 +142,7 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
     }
 
     val activeSnapshot = snapshots[activeTabId]
-    val panelTabs = listOf("Chat", "Memory", "History", "Plan", "Settings", "Tools")
+    val panelTabs = listOf("Chat", "Chats", "Memory", "History", "Plan", "Settings", "Tools")
 
     Column(modifier = Modifier.fillMaxSize().background(Color(0xFF0B0F14))) {
         TopAppBar(
@@ -157,7 +162,7 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
                 if (isWorking) {
                     Text("Working…", color = Color(0xFF38BDF8), modifier = Modifier.padding(end = 12.dp))
                 }
-                IconButton(onClick = { sidePanelIndex = 4 }) {
+                IconButton(onClick = { sidePanelIndex = 5 }) {
                     Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
                 }
                 IconButton(onClick = {
@@ -239,6 +244,7 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
                             icon = {
                                 when (title) {
                                     "Chat" -> Icon(Icons.Default.SmartToy, contentDescription = null)
+                                    "Chats" -> Icon(Icons.Default.OpenInBrowser, contentDescription = null)
                                     "Memory" -> Icon(Icons.Default.Memory, contentDescription = null)
                                     "History" -> Icon(Icons.Default.History, contentDescription = null)
                                     "Plan" -> Icon(Icons.Default.Psychology, contentDescription = null)
@@ -253,10 +259,16 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
                 Box(modifier = Modifier.weight(1f).padding(12.dp)) {
                     when (sidePanelIndex) {
                         0 -> ChatPanel(chatMessages = chat)
-                        1 -> MemoryPanel(memories = memories, clipboard = clipboard)
-                        2 -> HistoryPanel(logs = logs, onClear = viewModel::clearHistory)
-                        3 -> PlanPanel(plan = plan)
-                        4 -> SettingsPanel(
+                        1 -> SessionsPanel(
+                            sessions = sessions,
+                            currentSessionId = currentSessionId,
+                            onNewSession = viewModel::createNewSession,
+                            onSwitchSession = viewModel::switchSession
+                        )
+                        2 -> MemoryPanel(memories = memories, clipboard = clipboard)
+                        3 -> HistoryPanel(logs = logs, onClear = viewModel::clearHistory)
+                        4 -> PlanPanel(plan = plan)
+                        5 -> SettingsPanel(
                             apiKey = settingsApiKey,
                             model = settingsModel,
                             baseUrl = settingsBaseUrl,
@@ -339,7 +351,7 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
 
                     Divider(color = Color(0xFF1E293B), modifier = Modifier.padding(top = 12.dp))
 
-                    PreviewPanel(snapshot = activeSnapshot)
+                    PreviewPanel(snapshot = activeSnapshot, thinkingEntries = thinkingEntries)
                 }
             }
         }
@@ -365,6 +377,38 @@ private fun ChatPanel(chatMessages: List<ChatMessage>) {
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(text = message.text, color = Color.White)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SessionsPanel(
+    sessions: List<ChatSession>,
+    currentSessionId: String,
+    onNewSession: () -> Unit,
+    onSwitchSession: (String) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Chat sessions", color = Color.White, fontWeight = FontWeight.Bold)
+            Button(onClick = onNewSession) { Text("New chat") }
+        }
+        Spacer(Modifier.height(10.dp))
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxSize()) {
+            items(sessions) { session ->
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (session.id == currentSessionId) Color(0xFF1D4ED8) else Color(0xFF0F172A)
+                    ),
+                    modifier = Modifier.fillMaxWidth().clickable { onSwitchSession(session.id) }
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                        Text(session.title, color = Color.White, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(4.dp))
+                        Text(session.id, color = Color(0xFFCBD5E1), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
             }
         }
@@ -595,7 +639,10 @@ private fun ToolsPanel(
                 Button(onClick = { onTool("clear_history") }) { Text("Clear history") }
             }
             Spacer(Modifier.height(8.dp))
-            Button(onClick = { onTool("clear_clipboard") }) { Text("Clear clipboard") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { onTool("clear_clipboard") }) { Text("Clear clipboard") }
+                Button(onClick = { onTool("new_chat") }) { Text("New chat") }
+            }
         }
         item {
             Spacer(Modifier.height(8.dp))
@@ -659,7 +706,7 @@ private fun BrowserStatusHeader(
 }
 
 @Composable
-private fun PreviewPanel(snapshot: PageSnapshot?) {
+private fun PreviewPanel(snapshot: PageSnapshot?, thinkingEntries: List<ThinkingEntry>) {
     Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Icon(Icons.Default.Refresh, contentDescription = null, tint = Color.White)
@@ -668,26 +715,46 @@ private fun PreviewPanel(snapshot: PageSnapshot?) {
         Spacer(Modifier.height(8.dp))
         if (snapshot == null) {
             Text("No preview yet. Open a page first.", color = Color(0xFF94A3B8))
-            return
+        } else {
+            Text(snapshot.title, color = Color.White, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Updated: ${formatTimestamp(snapshot.updatedAt)}  •  Elements: ${snapshot.interactive.size}",
+                color = Color(0xFF64748B),
+                style = MaterialTheme.typography.labelSmall
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(snapshot.excerpt.ifBlank { "No visible text found." }, color = Color(0xFFCBD5E1), maxLines = 6, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.height(10.dp))
+            Text("Interactive elements", color = Color.White, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(6.dp))
+            LazyColumn(modifier = Modifier.fillMaxWidth().height(140.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(snapshot.interactive.take(12)) { node ->
+                    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A))) {
+                        Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
+                            Text(node.label.ifBlank { node.type }, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(node.selector, color = Color(0xFF94A3B8), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
         }
-        Text(snapshot.title, color = Color.White, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "Updated: ${formatTimestamp(snapshot.updatedAt)}  •  Elements: ${snapshot.interactive.size}",
-            color = Color(0xFF64748B),
-            style = MaterialTheme.typography.labelSmall
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(snapshot.excerpt.ifBlank { "No visible text found." }, color = Color(0xFFCBD5E1), maxLines = 6, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(10.dp))
-        Text("Interactive elements", color = Color.White, fontWeight = FontWeight.Bold)
+        Text("Thinking / execution trace", color = Color.White, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(6.dp))
-        LazyColumn(modifier = Modifier.fillMaxWidth().height(160.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            items(snapshot.interactive.take(20)) { node ->
-                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A))) {
+        LazyColumn(modifier = Modifier.fillMaxWidth().height(150.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(thinkingEntries.take(8)) { item ->
+                val accent = when (item.status) {
+                    "success" -> Color(0xFF16A34A)
+                    "error" -> Color(0xFFDC2626)
+                    "running" -> Color(0xFF38BDF8)
+                    else -> Color(0xFF64748B)
+                }
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF0B1220))) {
                     Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
-                        Text(node.label.ifBlank { node.type }, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(node.selector, color = Color(0xFF94A3B8), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(item.title, color = accent, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.height(4.dp))
+                        Text(item.details, color = Color(0xFFCBD5E1), maxLines = 3, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
@@ -846,6 +913,20 @@ private class BrowserRuntime(
                 refreshSnapshot(action.tabId ?: webViews.keys.first())
                 RuntimeResult(ok, payload.optString("message", "Extracted text."), payload.optString("text"))
             }
+            "extract_page_text" -> {
+                val webView = resolveTab(action.tabId)
+                val payload = selectorActionWithRetry(webView, attempts = viewModel.retryCount.value) { jsCommand(webView, extractPageScript()) }
+                val ok = payload.optBoolean("ok", false)
+                refreshSnapshot(action.tabId ?: webViews.keys.first())
+                RuntimeResult(ok, payload.optString("message", "Extracted page text."), payload.optString("text"))
+            }
+            "scroll" -> {
+                val webView = resolveTab(action.tabId)
+                val payload = jsCommand(webView, scrollScript(action.text.orEmpty()))
+                val ok = payload.optBoolean("ok", false)
+                refreshSnapshot(action.tabId ?: webViews.keys.first())
+                RuntimeResult(ok, payload.optString("message", "Scrolled."))
+            }
             else -> RuntimeResult(false, "Unsupported action: ${action.kind}")
         }
     }
@@ -971,6 +1052,24 @@ private class BrowserRuntime(
           if (!el) return JSON.stringify({ok:false, message:'Selector not found: ${jsEscape(selector)}'});
           const text = ('value' in el && el.value) ? el.value : ((el.innerText || el.textContent || '').trim());
           return JSON.stringify({ok:true, message:'Extracted text from ${jsEscape(selector)}', text});
+        })();
+    """.trimIndent()
+
+    private fun extractPageScript() = """
+        (() => {
+          const text = (document.body?.innerText || '').trim();
+          return JSON.stringify({ok:true, message:'Extracted page text', text});
+        })();
+    """.trimIndent()
+
+    private fun scrollScript(direction: String) = """
+        (() => {
+          const dir = '${jsEscape(direction)}';
+          if (dir === 'up') window.scrollBy({ top: -window.innerHeight * 0.8, behavior: 'smooth' });
+          else if (dir === 'top') window.scrollTo({ top: 0, behavior: 'smooth' });
+          else if (dir === 'bottom') window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+          else window.scrollBy({ top: window.innerHeight * 0.8, behavior: 'smooth' });
+          return JSON.stringify({ok:true, message:'Scrolled ' + dir});
         })();
     """.trimIndent()
 

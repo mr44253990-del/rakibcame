@@ -4,19 +4,21 @@ This project was rebuilt from the original repo configuration into a **safe brow
 
 ## What it does
 
-- Chat-first UI
+- Chat-first UI with separate chat sessions
 - Real Android `WebView` browser preview
 - Multi-tab browsing, including background tabs
-- Generic browser actions: open URL, new tab, switch tab, close tab, back, forward, refresh, search
-- DOM actions: click CSS selector, type into selector, extract text from selector
+- Sequential multi-step task execution with status updates
+- Generic browser actions: open URL, new tab, switch tab, close tab, back, forward, refresh, search, scroll
+- DOM actions: click CSS selector, type into selector, extract text from selector, extract full page text
 - Automatic retry for selector actions
 - Live DOM preview updates
-- Action history
-- Memory notes
+- Thinking / execution trace panel
+- Session-based action history
+- Session-based memory notes
 - Clipboard aliases such as `{{headline}}`
 - Optional Mistral planning from natural-language prompts
 - In-app AI settings screen for API key, model, base URL, test, save
-- Runtime tools panel for quick tabs, refresh, docs, and cleanup
+- Runtime tools panel for quick tabs, refresh, docs, new chat, and cleanup
 
 ## Safety limits
 
