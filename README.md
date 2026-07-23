@@ -7,9 +7,11 @@ This project was rebuilt from the original repo configuration into a **safe brow
 - Chat-first UI with separate chat sessions
 - Real Android `WebView` browser preview
 - Multi-tab browsing, including background tabs
-- Sequential multi-step task execution with status updates
-- Generic browser actions: open URL, new tab, switch tab, close tab, back, forward, refresh, search, scroll
+- Sequential multi-step task execution with Bengali status updates
+- Generic browser actions: open URL, new tab, switch tab, target a specific tab, close tab, back, forward, refresh, search, scroll
 - DOM actions: click CSS selector, type into selector, extract text from selector, extract full page text
+- Smart login helper for common email/username + password forms
+- Wait for full page load before final task response
 - Automatic retry for selector actions
 - Live DOM preview updates
 - Thinking / execution trace panel
@@ -43,7 +45,10 @@ This app intentionally **does not automate**:
 - `click button.primary`
 - `type hello world into input[name='q']`
 - `extract h1 as headline`
+- `copy page as page_text`
 - `new tab https://developer.android.com`
+- `tab 2 open https://kotlinlang.org`
+- `login your@email.com password your-password`
 - `remember use the second tab for docs`
 
 ## Notes

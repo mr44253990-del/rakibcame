@@ -74,6 +74,7 @@ data class BrowserAction(
     val url: String? = null,
     val selector: String? = null,
     val text: String? = null,
+    val secondaryText: String? = null,
     val waitMs: Long? = null,
     val background: Boolean = false,
     val saveAs: String? = null,
@@ -606,8 +607,15 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
     }
 
     private fun parseSingleAction(prompt: String): List<BrowserAction> {
-        val lowered = prompt.trim().lowercase()
+        val trimmed = prompt.trim()
+        val lowered = trimmed.lowercase()
         val actions = mutableListOf<BrowserAction>()
+        val explicitTabId = extractRequestedTabId(lowered)
+
+        parseSmartLogin(trimmed)?.let {
+            actions += if (explicitTabId != null) it.copy(tabId = explicitTabId) else it
+            return actions
+        }
 
         if (lowered.startsWith("open background ") || lowered.startsWith("background tab ")) {
             val url = extractUrl(prompt)?.let(::normalizeUrl)
@@ -623,7 +631,7 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
                 lowered.startsWith("ওপেন ") ||
                 lowered == url.lowercase()
             ) {
-                actions += BrowserAction(kind = "open_url", url = normalizeUrl(url))
+                actions += BrowserAction(kind = "open_url", url = normalizeUrl(url), tabId = explicitTabId)
                 return actions
             }
         }
@@ -633,27 +641,28 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
             if (query.isNotBlank()) {
                 actions += BrowserAction(
                     kind = "open_url",
-                    url = "https://www.google.com/search?q=" + query.replace(" ", "+")
+                    url = "https://www.google.com/search?q=" + query.replace(" ", "+"),
+                    tabId = explicitTabId
                 )
                 return actions
             }
         }
 
         if (lowered == "back" || lowered.contains("go back") || lowered.contains("পেছনে")) {
-            actions += BrowserAction(kind = "back")
+            actions += BrowserAction(kind = "back", tabId = explicitTabId)
         }
         if (lowered == "forward" || lowered.contains("go forward") || lowered.contains("সামনে যাও")) {
-            actions += BrowserAction(kind = "forward")
+            actions += BrowserAction(kind = "forward", tabId = explicitTabId)
         }
         if (lowered == "refresh" || lowered.contains("reload") || lowered.contains("রিফ্রেশ")) {
-            actions += BrowserAction(kind = "refresh")
+            actions += BrowserAction(kind = "refresh", tabId = explicitTabId)
         }
         if (lowered.startsWith("new tab") || lowered.startsWith("নতুন ট্যাব")) {
             val url = extractUrl(prompt)?.let(::normalizeUrl)
             actions += BrowserAction(kind = "new_tab", url = url)
         }
         if (lowered.startsWith("close tab") || lowered.startsWith("ট্যাব বন্ধ")) {
-            actions += BrowserAction(kind = "close_tab")
+            actions += BrowserAction(kind = "close_tab", tabId = explicitTabId)
         }
         if (lowered.startsWith("switch tab ") || lowered.startsWith("ট্যাব বদলাও ")) {
             val raw = lowered.substringAfterLast(' ').trim().toIntOrNull()
@@ -662,41 +671,58 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
         }
         if (lowered.startsWith("extract page") || lowered.startsWith("copy page") || lowered.startsWith("পেইজ কপি")) {
             val alias = prompt.substringAfter(" as ", "page_text").trim().ifBlank { "page_text" }
-            actions += BrowserAction(kind = "extract_page_text", saveAs = alias)
+            actions += BrowserAction(kind = "extract_page_text", saveAs = alias, tabId = explicitTabId)
         } else if (lowered.startsWith("extract ") || lowered.startsWith("copy ")) {
             val selector = prompt.substringAfter(' ').substringBefore(" as ").trim()
             val alias = prompt.substringAfter(" as ", "").trim().ifBlank { null }
-            if (selector.isNotBlank()) actions += BrowserAction(kind = "extract_text", selector = selector, saveAs = alias)
+            if (selector.isNotBlank()) actions += BrowserAction(kind = "extract_text", selector = selector, saveAs = alias, tabId = explicitTabId)
         }
         if (lowered.startsWith("click ") || lowered.startsWith("ক্লিক ")) {
             val selector = prompt.substringAfter(' ').trim()
-            if (selector.isNotBlank()) actions += BrowserAction(kind = "click", selector = selector)
+            if (selector.isNotBlank()) actions += BrowserAction(kind = "click", selector = selector, tabId = explicitTabId)
         }
         if (lowered.startsWith("type ") || lowered.startsWith("লিখো ")) {
             val body = prompt.substringAfter(' ')
             val pieces = body.split(" into ", limit = 2)
             if (pieces.size == 2) {
-                actions += BrowserAction(kind = "type", text = pieces[0].trim(), selector = pieces[1].trim())
+                actions += BrowserAction(kind = "type", text = pieces[0].trim(), selector = pieces[1].trim(), tabId = explicitTabId)
             }
         }
         if (lowered.startsWith("scroll down") || lowered.contains("নিচে স্ক্রল")) {
-            actions += BrowserAction(kind = "scroll", text = "down")
+            actions += BrowserAction(kind = "scroll", text = "down", tabId = explicitTabId)
         }
         if (lowered.startsWith("scroll up") || lowered.contains("উপরে স্ক্রল")) {
-            actions += BrowserAction(kind = "scroll", text = "up")
+            actions += BrowserAction(kind = "scroll", text = "up", tabId = explicitTabId)
         }
         if (lowered.startsWith("scroll top")) {
-            actions += BrowserAction(kind = "scroll", text = "top")
+            actions += BrowserAction(kind = "scroll", text = "top", tabId = explicitTabId)
         }
         if (lowered.startsWith("scroll bottom")) {
-            actions += BrowserAction(kind = "scroll", text = "bottom")
+            actions += BrowserAction(kind = "scroll", text = "bottom", tabId = explicitTabId)
         }
         if (lowered.startsWith("wait ") || lowered.startsWith("অপেক্ষা ")) {
             val seconds = lowered.substringAfter(' ').substringBefore(' ').trim().toLongOrNull()
-            if (seconds != null) actions += BrowserAction(kind = "wait", waitMs = seconds * 1000L)
+            if (seconds != null) actions += BrowserAction(kind = "wait", waitMs = seconds * 1000L, tabId = explicitTabId)
         }
 
         return actions
+    }
+
+    private fun extractRequestedTabId(lowered: String): String? {
+        val match = Regex("""(?:tab|ট্যাব)\s*(\d+)""").find(lowered) ?: return null
+        val index = match.groupValues.getOrNull(1)?.toIntOrNull()?.minus(1) ?: return null
+        return _tabs.value.getOrNull(index)?.id
+    }
+
+    private fun parseSmartLogin(prompt: String): BrowserAction? {
+        val lowered = prompt.lowercase()
+        if (!(lowered.startsWith("login ") || lowered.startsWith("log in ") || lowered.startsWith("লগইন "))) return null
+        val userMatch = Regex("""(?:login|log in|লগইন)(?: with)?\s+(.+?)\s+(?:password|pass|পাসওয়ার্ড|পাসওয়ার্ড)\s+(.+)""", RegexOption.IGNORE_CASE).find(prompt)
+            ?: return null
+        val username = userMatch.groupValues.getOrNull(1)?.trim().orEmpty()
+        val password = userMatch.groupValues.getOrNull(2)?.trim().orEmpty()
+        if (username.isBlank() || password.isBlank()) return null
+        return BrowserAction(kind = "smart_login", text = username, secondaryText = password)
     }
 
     private fun looksUnsafe(prompt: String): Boolean {
@@ -711,8 +737,7 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
             "create account",
             "bypass",
             "up.cts6.com",
-            "obtain code",
-            "email login"
+            "obtain code"
         )
         return blockedHints.any { it in text }
     }
@@ -817,6 +842,7 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
                 - switch_tab {"kind":"switch_tab","tabId":"tab-1"}
                 - click {"kind":"click","selector":"button.primary","tabId":"tab-1"}
                 - type {"kind":"type","selector":"input[name='q']","text":"hello","tabId":"tab-1"}
+                - smart_login {"kind":"smart_login","text":"user@example.com","secondaryText":"password123","tabId":"tab-1"}
                 - extract_text {"kind":"extract_text","selector":"h1","saveAs":"headline","tabId":"tab-1"}
                 - extract_page_text {"kind":"extract_page_text","saveAs":"page_text","tabId":"tab-1"}
                 - scroll {"kind":"scroll","text":"down","tabId":"tab-1"}
@@ -920,6 +946,7 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
                             url = item.optString("url").ifBlank { null },
                             selector = item.optString("selector").ifBlank { null },
                             text = item.optString("text").ifBlank { null },
+                            secondaryText = item.optString("secondaryText").ifBlank { null },
                             waitMs = item.optLong("waitMs").takeIf { it > 0 },
                             background = item.optBoolean("background", false),
                             saveAs = item.optString("saveAs").ifBlank { null }
@@ -1023,6 +1050,7 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
             "refresh" -> "পেইজ refresh করছি"
             "click" -> "selector click করছি: ${action.selector.orEmpty()}"
             "type" -> "লেখা বসাচ্ছি: ${action.selector.orEmpty()}"
+            "smart_login" -> "লগইন ফর্ম পূরণ ও submit করার চেষ্টা করছি"
             "extract_text" -> "নির্দিষ্ট লেখা কপি করছি: ${action.selector.orEmpty()}"
             "extract_page_text" -> "পেইজের লেখা কপি করছি"
             "scroll" -> "স্ক্রল করছি ${action.text.orEmpty()}"
@@ -1035,6 +1063,7 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
         return when (action.kind) {
             "click" -> "document.querySelector('${action.selector.orEmpty()}')?.click()"
             "type" -> "document.querySelector('${action.selector.orEmpty()}').value = '${action.text.orEmpty()}'"
+            "smart_login" -> "auto-detect username/email + password fields, fill, then submit form"
             "extract_text" -> "document.querySelector('${action.selector.orEmpty()}').innerText"
             "extract_page_text" -> "document.body.innerText"
             "scroll" -> "window.scrollBy(...) // ${action.text.orEmpty()}"
@@ -1048,6 +1077,7 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
             "extract_text", "extract_page_text" -> "লেখা সংগ্রহ করা হয়েছে।"
             "click" -> "ক্লিক সম্পন্ন হয়েছে।"
             "type" -> "লেখা বসানো হয়েছে।"
+            "smart_login" -> "লগইন ফর্ম submit করা হয়েছে। যদি সাইটে 2FA/OTP লাগে, সেটা আপনাকে manually দিতে হবে।"
             "scroll" -> "স্ক্রল সম্পন্ন হয়েছে।"
             "open_url" -> "ওয়েবসাইট লোড করা হয়েছে।"
             else -> message

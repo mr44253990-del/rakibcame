@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
@@ -376,7 +377,9 @@ private fun ChatPanel(chatMessages: List<ChatMessage>) {
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(Modifier.height(4.dp))
-                    Text(text = message.text, color = Color.White)
+                    SelectionContainer {
+                        Text(text = message.text, color = Color.White)
+                    }
                 }
             }
         }
@@ -508,7 +511,7 @@ private fun PlanPanel(plan: PlanPreview?) {
                     Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
                         Text(action.kind, color = Color.White, fontWeight = FontWeight.Bold)
                         Text(
-                            listOfNotNull(action.url, action.selector, action.text, action.saveAs).joinToString(" | ").ifBlank { "tab=${action.tabId}" },
+                            listOfNotNull(action.url, action.selector, action.text, action.secondaryText?.let { "••••" }, action.saveAs).joinToString(" | ").ifBlank { "tab=${action.tabId}" },
                             color = Color(0xFFCBD5E1)
                         )
                     }
@@ -617,7 +620,9 @@ private fun ToolsPanel(
         "search android webview compose",
         "new tab https://developer.android.com",
         "extract h1 as headline",
-        "click button.primary"
+        "copy page as page_text",
+        "scroll down then copy page as page_text",
+        "login your@email.com password your-password"
     )
 
     LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) {
@@ -855,13 +860,17 @@ private class BrowserRuntime(
         return when (action.kind) {
             "new_tab" -> {
                 val newId = viewModel.createTab(action.url ?: "https://example.com", activate = !action.background)
-                ensureTab(newId, action.url ?: "https://example.com")
+                val webView = ensureTab(newId, action.url ?: "https://example.com")
+                waitForPageStable(webView)
+                refreshSnapshot(newId)
                 RuntimeResult(true, "Opened new tab $newId")
             }
             "switch_tab" -> {
                 val tabId = action.tabId ?: return RuntimeResult(false, "No tab id provided.")
-                ensureTab(tabId)
+                val webView = ensureTab(tabId)
                 viewModel.setActiveTab(tabId)
+                waitForPageStable(webView)
+                refreshSnapshot(tabId)
                 RuntimeResult(true, "Switched to $tabId")
             }
             "close_tab" -> {
@@ -879,6 +888,8 @@ private class BrowserRuntime(
                 val webView = ensureTab(tabId)
                 val url = action.url ?: return RuntimeResult(false, "No URL provided.")
                 webView.post { webView.loadUrl(url) }
+                waitForPageStable(webView)
+                refreshSnapshot(tabId)
                 RuntimeResult(true, "Opening $url")
             }
             "back" -> navigate(action.tabId, "Went back") { if (canGoBack()) { goBack(); true } else false }
@@ -893,6 +904,7 @@ private class BrowserRuntime(
                 val selector = action.selector ?: return RuntimeResult(false, "No selector provided.")
                 val payload = selectorActionWithRetry(webView, attempts = viewModel.retryCount.value) { jsCommand(webView, clickScript(selector)) }
                 val ok = payload.optBoolean("ok", false)
+                if (ok) waitForPageStable(webView)
                 refreshSnapshot(action.tabId ?: webViews.keys.first())
                 RuntimeResult(ok, payload.optString("message", if (ok) "Clicked." else "Click failed."))
             }
@@ -902,6 +914,7 @@ private class BrowserRuntime(
                 val text = viewModel.resolveTemplate(action.text)
                 val payload = selectorActionWithRetry(webView, attempts = viewModel.retryCount.value) { jsCommand(webView, typeScript(selector, text)) }
                 val ok = payload.optBoolean("ok", false)
+                waitForDomCalm(webView)
                 refreshSnapshot(action.tabId ?: webViews.keys.first())
                 RuntimeResult(ok, payload.optString("message", if (ok) "Typed text." else "Typing failed."))
             }
@@ -919,6 +932,16 @@ private class BrowserRuntime(
                 val ok = payload.optBoolean("ok", false)
                 refreshSnapshot(action.tabId ?: webViews.keys.first())
                 RuntimeResult(ok, payload.optString("message", "Extracted page text."), payload.optString("text"))
+            }
+            "smart_login" -> {
+                val webView = resolveTab(action.tabId)
+                val username = viewModel.resolveTemplate(action.text)
+                val password = viewModel.resolveTemplate(action.secondaryText)
+                val payload = selectorActionWithRetry(webView, attempts = viewModel.retryCount.value) { jsCommand(webView, smartLoginScript(username, password)) }
+                val ok = payload.optBoolean("ok", false)
+                if (ok) waitForPageStable(webView, timeoutMs = 20000L)
+                refreshSnapshot(action.tabId ?: webViews.keys.first())
+                RuntimeResult(ok, payload.optString("message", "Login attempt finished."))
             }
             "scroll" -> {
                 val webView = resolveTab(action.tabId)
@@ -950,8 +973,36 @@ private class BrowserRuntime(
         val ok = suspendCancellableCoroutine<Boolean> { continuation ->
             webView.post { continuation.resume(webView.action()) }
         }
+        if (ok) waitForPageStable(webView)
         refreshSnapshot(tabId ?: webViews.keys.first())
         return if (ok) RuntimeResult(true, successMessage) else RuntimeResult(false, "Navigation not available.")
+    }
+
+    private suspend fun waitForDomCalm(webView: WebView) {
+        delay(300)
+        repeat(5) {
+            val payload = jsCommand(webView, readyStateScript())
+            if (payload.optBoolean("ok", false) && payload.optBoolean("ready", false)) {
+                delay(200)
+                return
+            }
+            delay(250)
+        }
+    }
+
+    private suspend fun waitForPageStable(webView: WebView, timeoutMs: Long = 15000L) {
+        val started = System.currentTimeMillis()
+        while (System.currentTimeMillis() - started < timeoutMs) {
+            val progressReady = suspendCancellableCoroutine<Boolean> { continuation ->
+                webView.post { continuation.resume(webView.progress >= 95) }
+            }
+            val payload = jsCommand(webView, readyStateScript())
+            if (progressReady && payload.optBoolean("ok", false) && payload.optBoolean("ready", false)) {
+                delay(400)
+                return
+            }
+            delay(350)
+        }
     }
 
     private fun resolveTab(tabId: String?): WebView {
@@ -1059,6 +1110,39 @@ private class BrowserRuntime(
         (() => {
           const text = (document.body?.innerText || '').trim();
           return JSON.stringify({ok:true, message:'Extracted page text', text});
+        })();
+    """.trimIndent()
+
+    private fun readyStateScript() = """
+        (() => JSON.stringify({ok:true, ready: document.readyState === 'complete'}))();
+    """.trimIndent()
+
+    private fun smartLoginScript(username: String, password: String) = """
+        (() => {
+          const textLike = Array.from(document.querySelectorAll("input[type='email'], input[type='text'], input:not([type]), input[name*='user' i], input[name*='email' i], input[id*='user' i], input[id*='email' i]"));
+          const passwordField = document.querySelector("input[type='password']");
+          if (!passwordField) return JSON.stringify({ok:false, message:'Password field not found'});
+          const userField = textLike.find(el => el.offsetParent !== null) || textLike[0];
+          if (!userField) return JSON.stringify({ok:false, message:'Username/email field not found'});
+          userField.focus();
+          userField.value = '${jsEscape(username)}';
+          userField.dispatchEvent(new Event('input', { bubbles: true }));
+          userField.dispatchEvent(new Event('change', { bubbles: true }));
+          passwordField.focus();
+          passwordField.value = '${jsEscape(password)}';
+          passwordField.dispatchEvent(new Event('input', { bubbles: true }));
+          passwordField.dispatchEvent(new Event('change', { bubbles: true }));
+          const form = passwordField.form || userField.form;
+          const submit = form?.querySelector("button[type='submit'], input[type='submit'], button") || document.querySelector("button[type='submit'], input[type='submit'], button");
+          if (submit) {
+            submit.click();
+            return JSON.stringify({ok:true, message:'Login form submitted'});
+          }
+          if (form) {
+            form.submit();
+            return JSON.stringify({ok:true, message:'Login form submitted'});
+          }
+          return JSON.stringify({ok:false, message:'Submit button/form not found'});
         })();
     """.trimIndent()
 
