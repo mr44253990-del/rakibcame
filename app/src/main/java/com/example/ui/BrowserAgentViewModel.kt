@@ -86,6 +86,7 @@ data class PlannerResult(
 
 class BrowserAgentViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = AgentRepository(AppDatabase.getInstance(application).agentDao())
+    private val prefs = application.getSharedPreferences("browser_agent_prefs", android.content.Context.MODE_PRIVATE)
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
@@ -131,6 +132,24 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
     private val _browserCommands = MutableSharedFlow<BrowserAction>(extraBufferCapacity = 64)
     val browserCommands = _browserCommands.asSharedFlow()
 
+    private val _aiApiKey = MutableStateFlow(loadStoredApiKey())
+    val aiApiKey: StateFlow<String> = _aiApiKey.asStateFlow()
+
+    private val _aiModel = MutableStateFlow(loadStoredModel())
+    val aiModel: StateFlow<String> = _aiModel.asStateFlow()
+
+    private val _aiBaseUrl = MutableStateFlow(loadStoredBaseUrl())
+    val aiBaseUrl: StateFlow<String> = _aiBaseUrl.asStateFlow()
+
+    private val _aiStatus = MutableStateFlow("AI ready.")
+    val aiStatus: StateFlow<String> = _aiStatus.asStateFlow()
+
+    private val _autoPreviewEnabled = MutableStateFlow(prefs.getBoolean("AUTO_PREVIEW", true))
+    val autoPreviewEnabled: StateFlow<Boolean> = _autoPreviewEnabled.asStateFlow()
+
+    private val _retryCount = MutableStateFlow(prefs.getInt("RETRY_COUNT", 3).coerceIn(1, 5))
+    val retryCount: StateFlow<Int> = _retryCount.asStateFlow()
+
     val memories = repository.memories.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
@@ -142,6 +161,87 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
         SharingStarted.WhileSubscribed(5_000),
         emptyList()
     )
+
+    private fun loadStoredApiKey(): String {
+        val stored = prefs.getString("AI_API_KEY", null).orEmpty().trim()
+        if (stored.isNotBlank()) return stored
+        return buildConfigApiKey().takeUnless { it.equals("CHANGE_ME", ignoreCase = true) }.orEmpty()
+    }
+
+    private fun loadStoredModel(): String {
+        return prefs.getString("AI_MODEL", null)?.trim().takeUnless { it.isNullOrBlank() }
+            ?: buildConfigModel().ifBlank { "mistral-small-latest" }
+    }
+
+    private fun loadStoredBaseUrl(): String {
+        return prefs.getString("AI_BASE_URL", null)?.trim().takeUnless { it.isNullOrBlank() }
+            ?: "https://api.mistral.ai/v1/chat/completions"
+    }
+
+    fun maskedApiKey(): String {
+        val value = _aiApiKey.value.trim()
+        if (value.isBlank()) return "Not configured"
+        return if (value.length <= 8) "••••••••" else value.take(4) + "••••••" + value.takeLast(4)
+    }
+
+    fun saveAiConfig(apiKey: String, model: String, baseUrl: String) {
+        val finalKey = apiKey.trim()
+        val finalModel = model.trim().ifBlank { "mistral-small-latest" }
+        val finalBaseUrl = normalizeBaseUrl(baseUrl)
+        prefs.edit()
+            .putString("AI_API_KEY", finalKey)
+            .putString("AI_MODEL", finalModel)
+            .putString("AI_BASE_URL", finalBaseUrl)
+            .apply()
+        _aiApiKey.value = finalKey
+        _aiModel.value = finalModel
+        _aiBaseUrl.value = finalBaseUrl
+        _aiStatus.value = if (finalKey.isBlank()) "AI config saved without API key." else "AI config saved."
+        addChat(ChatRole.SYSTEM, "AI settings updated for model $finalModel")
+    }
+
+    fun setAutoPreview(enabled: Boolean) {
+        prefs.edit().putBoolean("AUTO_PREVIEW", enabled).apply()
+        _autoPreviewEnabled.value = enabled
+    }
+
+    fun setRetryCount(value: Int) {
+        val safeValue = value.coerceIn(1, 5)
+        prefs.edit().putInt("RETRY_COUNT", safeValue).apply()
+        _retryCount.value = safeValue
+    }
+
+    fun clearClipboard() {
+        _clipboard.value = emptyMap()
+        addChat(ChatRole.SYSTEM, "Clipboard aliases cleared.")
+    }
+
+    fun addClipboardItem(alias: String, value: String) {
+        val cleanAlias = alias.trim()
+        if (cleanAlias.isBlank() || value.isBlank()) return
+        _clipboard.value = _clipboard.value + (cleanAlias to value)
+    }
+
+    fun testAiConfig() {
+        viewModelScope.launch {
+            _aiStatus.value = "Testing AI connection…"
+            val result = withContext(Dispatchers.IO) { performAiHealthCheck() }
+            _aiStatus.value = result
+            addChat(ChatRole.SYSTEM, result)
+        }
+    }
+
+    fun submitQuickTool(action: String) {
+        when (action) {
+            "new_tab" -> viewModelScope.launch { _browserCommands.emit(BrowserAction(kind = "new_tab", url = "https://example.com")) }
+            "background_tab" -> viewModelScope.launch { _browserCommands.emit(BrowserAction(kind = "new_tab", url = "https://developer.android.com", background = true)) }
+            "refresh" -> viewModelScope.launch { _browserCommands.emit(BrowserAction(kind = "refresh", tabId = _activeTabId.value)) }
+            "google" -> viewModelScope.launch { _browserCommands.emit(BrowserAction(kind = "open_url", tabId = _activeTabId.value, url = "https://www.google.com")) }
+            "docs" -> viewModelScope.launch { _browserCommands.emit(BrowserAction(kind = "new_tab", url = "https://docs.mistral.ai", background = false)) }
+            "clear_clipboard" -> clearClipboard()
+            "clear_history" -> clearHistory()
+        }
+    }
 
     fun submitPrompt(rawPrompt: String) {
         val prompt = rawPrompt.trim()
@@ -185,29 +285,34 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
             return
         }
 
-        val apiKey = mistralApiKey()
+        val apiKey = effectiveApiKey()
         if (apiKey.isBlank()) {
+            _aiStatus.value = "Missing API key. Open Settings and save your AI config."
             addChat(
                 ChatRole.ASSISTANT,
-                "Complex planning needs a Mistral API key. Add MISTRAL_API_KEY in .env, rebuild, then ask things like: open a site, extract text, click a selector, type into a form, switch tabs, or save memory."
+                "Complex planning needs a Mistral API key. Open Settings in the app, add API key/model/base URL, save, then try again."
             )
             return
         }
 
+        _aiStatus.value = "Planning with ${effectiveModel()}…"
         val result = withContext(Dispatchers.IO) { planWithMistral(prompt, apiKey) }
         when (result.status.lowercase()) {
             "ok" -> {
                 result.memories.forEach { (title, content) -> repository.addMemory(title, content) }
                 _planPreview.value = PlanPreview(result.message, result.actions)
                 queueActions(result.actions)
+                _aiStatus.value = "AI plan ready with ${result.actions.size} action(s)."
                 addChat(ChatRole.ASSISTANT, result.message.ifBlank { buildQueuedMessage(result.actions) })
             }
             "refuse", "needs_user" -> {
                 _planPreview.value = PlanPreview(result.message, emptyList())
+                _aiStatus.value = result.message
                 addChat(ChatRole.ASSISTANT, result.message)
             }
             else -> {
-                addChat(ChatRole.ASSISTANT, "Planner returned an unexpected response.")
+                _aiStatus.value = result.message
+                addChat(ChatRole.ASSISTANT, result.message.ifBlank { "Planner returned an unexpected response." })
             }
         }
     }
@@ -288,7 +393,7 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
             )
 
             if (!action.saveAs.isNullOrBlank() && !extractedText.isNullOrBlank()) {
-                _clipboard.value = _clipboard.value + (action.saveAs to extractedText)
+                addClipboardItem(action.saveAs, extractedText)
                 addChat(ChatRole.SYSTEM, "Copied value to {{${action.saveAs}}}")
             }
 
@@ -433,16 +538,75 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
         return regex.find(text)?.groupValues?.get(1)
     }
 
-    private fun mistralApiKey(): String = try {
-        BuildConfig.MISTRAL_API_KEY
+    private fun buildConfigApiKey(): String = try {
+        BuildConfig.MISTRAL_API_KEY.orEmpty().trim()
     } catch (_: Throwable) {
         ""
     }
 
-    private fun mistralModel(): String = try {
-        BuildConfig.MISTRAL_MODEL.ifBlank { "mistral-small-latest" }
+    private fun buildConfigModel(): String = try {
+        BuildConfig.MISTRAL_MODEL.orEmpty().trim()
     } catch (_: Throwable) {
-        "mistral-small-latest"
+        ""
+    }
+
+    private fun effectiveApiKey(): String {
+        return _aiApiKey.value.trim().takeUnless { it.isBlank() || it.equals("CHANGE_ME", ignoreCase = true) }
+            ?: buildConfigApiKey().takeUnless { it.isBlank() || it.equals("CHANGE_ME", ignoreCase = true) }
+            ?: ""
+    }
+
+    private fun effectiveModel(): String {
+        return _aiModel.value.trim().ifBlank { buildConfigModel().ifBlank { "mistral-small-latest" } }
+    }
+
+    private fun effectiveBaseUrl(): String {
+        return normalizeBaseUrl(_aiBaseUrl.value)
+    }
+
+    private fun normalizeBaseUrl(value: String): String {
+        val trimmed = value.trim()
+        return when {
+            trimmed.isBlank() -> "https://api.mistral.ai/v1/chat/completions"
+            trimmed.endsWith("/v1/chat/completions") -> trimmed
+            trimmed.endsWith("/") -> trimmed + "v1/chat/completions"
+            trimmed.endsWith("/v1") -> "$trimmed/chat/completions"
+            else -> "$trimmed/v1/chat/completions"
+        }
+    }
+
+    private fun performAiHealthCheck(): String {
+        val apiKey = effectiveApiKey()
+        if (apiKey.isBlank()) return "AI health check failed: missing API key."
+        return try {
+            val requestJson = JSONObject().apply {
+                put("model", effectiveModel())
+                put("temperature", 0.0)
+                put(
+                    "messages",
+                    JSONArray()
+                        .put(JSONObject().put("role", "system").put("content", "Return exactly: OK"))
+                        .put(JSONObject().put("role", "user").put("content", "Ping"))
+                )
+                put("max_tokens", 8)
+            }
+            val request = Request.Builder()
+                .url(effectiveBaseUrl())
+                .addHeader("Authorization", "Bearer $apiKey")
+                .addHeader("Content-Type", "application/json")
+                .post(requestJson.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    return "AI health check failed: HTTP ${response.code} ${extractApiError(body)}"
+                }
+                val content = extractAssistantContent(body)
+                if (content.isBlank()) "AI health check failed: empty response." else "AI connection successful: ${content.take(80)}"
+            }
+        } catch (t: Throwable) {
+            "AI health check failed: ${t.message ?: "unknown error"}"
+        }
     }
 
     private fun planWithMistral(prompt: String, apiKey: String): PlannerResult {
@@ -503,7 +667,7 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
             }
 
             val requestJson = JSONObject().apply {
-                put("model", mistralModel())
+                put("model", effectiveModel())
                 put("temperature", 0.1)
                 put("response_format", JSONObject().put("type", "json_object"))
                 put(
@@ -515,7 +679,7 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
             }
 
             val request = Request.Builder()
-                .url("https://api.mistral.ai/v1/chat/completions")
+                .url(effectiveBaseUrl())
                 .addHeader("Authorization", "Bearer $apiKey")
                 .addHeader("Content-Type", "application/json")
                 .post(requestJson.toString().toRequestBody("application/json".toMediaType()))
@@ -526,16 +690,19 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
                 if (!response.isSuccessful) {
                     return PlannerResult(
                         status = "error",
-                        message = "Mistral API error: ${response.code}",
+                        message = "AI response error: HTTP ${response.code} ${extractApiError(body)}",
                         actions = emptyList()
                     )
                 }
 
-                val root = JSONObject(body)
-                val content = root.getJSONArray("choices")
-                    .getJSONObject(0)
-                    .getJSONObject("message")
-                    .getString("content")
+                val content = extractAssistantContent(body)
+                if (content.isBlank()) {
+                    return PlannerResult(
+                        status = "error",
+                        message = "AI response error: empty assistant content.",
+                        actions = emptyList()
+                    )
+                }
                 parsePlannerJson(content)
             }
         } catch (t: Throwable) {
@@ -548,43 +715,91 @@ class BrowserAgentViewModel(application: Application) : AndroidViewModel(applica
     }
 
     private fun parsePlannerJson(content: String): PlannerResult {
-        val cleaned = content.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
-        val json = JSONObject(cleaned)
-        val actionsArray = json.optJSONArray("actions") ?: JSONArray()
-        val actions = buildList {
-            for (i in 0 until actionsArray.length()) {
-                val item = actionsArray.optJSONObject(i) ?: continue
-                add(
-                    BrowserAction(
-                        kind = item.optString("kind"),
-                        tabId = item.optString("tabId").ifBlank { null },
-                        url = item.optString("url").ifBlank { null },
-                        selector = item.optString("selector").ifBlank { null },
-                        text = item.optString("text").ifBlank { null },
-                        waitMs = item.optLong("waitMs").takeIf { it > 0 },
-                        background = item.optBoolean("background", false),
-                        saveAs = item.optString("saveAs").ifBlank { null }
+        return try {
+            val cleaned = extractJsonObject(content)
+            val json = JSONObject(cleaned)
+            val actionsArray = json.optJSONArray("actions") ?: JSONArray()
+            val actions = buildList {
+                for (i in 0 until actionsArray.length()) {
+                    val item = actionsArray.optJSONObject(i) ?: continue
+                    add(
+                        BrowserAction(
+                            kind = item.optString("kind"),
+                            tabId = item.optString("tabId").ifBlank { null },
+                            url = item.optString("url").ifBlank { null },
+                            selector = item.optString("selector").ifBlank { null },
+                            text = item.optString("text").ifBlank { null },
+                            waitMs = item.optLong("waitMs").takeIf { it > 0 },
+                            background = item.optBoolean("background", false),
+                            saveAs = item.optString("saveAs").ifBlank { null }
+                        )
                     )
-                )
+                }
             }
-        }
 
-        val memoriesArray = json.optJSONArray("memories") ?: JSONArray()
-        val memories = buildList {
-            for (i in 0 until memoriesArray.length()) {
-                val item = memoriesArray.optJSONObject(i) ?: continue
-                val title = item.optString("title")
-                val body = item.optString("content")
-                if (title.isNotBlank() && body.isNotBlank()) add(title to body)
+            val memoriesArray = json.optJSONArray("memories") ?: JSONArray()
+            val memories = buildList {
+                for (i in 0 until memoriesArray.length()) {
+                    val item = memoriesArray.optJSONObject(i) ?: continue
+                    val title = item.optString("title")
+                    val body = item.optString("content")
+                    if (title.isNotBlank() && body.isNotBlank()) add(title to body)
+                }
             }
-        }
 
-        return PlannerResult(
-            status = json.optString("status", "ok"),
-            message = json.optString("message", "Plan ready."),
-            actions = actions,
-            memories = memories
-        )
+            PlannerResult(
+                status = json.optString("status", "ok"),
+                message = json.optString("message", "Plan ready."),
+                actions = actions,
+                memories = memories
+            )
+        } catch (t: Throwable) {
+            PlannerResult(
+                status = "error",
+                message = "AI response parse error: ${t.message ?: "invalid JSON"}",
+                actions = emptyList()
+            )
+        }
+    }
+
+    private fun extractAssistantContent(body: String): String {
+        val root = JSONObject(body)
+        val message = root.optJSONArray("choices")
+            ?.optJSONObject(0)
+            ?.optJSONObject("message")
+            ?: return ""
+        val rawContent = message.opt("content")
+        return when (rawContent) {
+            is String -> rawContent
+            is JSONArray -> buildString {
+                for (i in 0 until rawContent.length()) {
+                    val item = rawContent.opt(i)
+                    when (item) {
+                        is JSONObject -> append(item.optString("text", item.toString()))
+                        is String -> append(item)
+                    }
+                }
+            }
+            else -> rawContent?.toString().orEmpty()
+        }
+    }
+
+    private fun extractJsonObject(content: String): String {
+        val cleaned = content.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+        if (cleaned.startsWith("{") && cleaned.endsWith("}")) return cleaned
+        val start = cleaned.indexOf('{')
+        val end = cleaned.lastIndexOf('}')
+        if (start >= 0 && end > start) return cleaned.substring(start, end + 1)
+        return cleaned
+    }
+
+    private fun extractApiError(body: String): String {
+        return runCatching {
+            val root = JSONObject(body)
+            root.optJSONObject("error")?.optString("message")
+                ?: root.optString("message")
+                ?: body.take(140)
+        }.getOrDefault(body.take(140))
     }
 
     private fun formatSnapshot(snapshot: PageSnapshot): String {

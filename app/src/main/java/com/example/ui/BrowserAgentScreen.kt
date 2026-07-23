@@ -28,22 +28,27 @@ import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.Tab
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -85,9 +90,18 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
     val clipboard by viewModel.clipboard.collectAsState()
     val plan by viewModel.planPreview.collectAsState()
     val isWorking by viewModel.isWorking.collectAsState()
+    val aiApiKey by viewModel.aiApiKey.collectAsState()
+    val aiModel by viewModel.aiModel.collectAsState()
+    val aiBaseUrl by viewModel.aiBaseUrl.collectAsState()
+    val aiStatus by viewModel.aiStatus.collectAsState()
+    val autoPreviewEnabled by viewModel.autoPreviewEnabled.collectAsState()
+    val retryCount by viewModel.retryCount.collectAsState()
 
     var input by rememberSaveable { mutableStateOf("") }
     var sidePanelIndex by rememberSaveable { mutableStateOf(0) }
+    var settingsApiKey by rememberSaveable(aiApiKey) { mutableStateOf(aiApiKey) }
+    var settingsModel by rememberSaveable(aiModel) { mutableStateOf(aiModel) }
+    var settingsBaseUrl by rememberSaveable(aiBaseUrl) { mutableStateOf(aiBaseUrl) }
 
     val runtime = remember {
         BrowserRuntime(
@@ -114,7 +128,8 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
         }
     }
 
-    LaunchedEffect(activeTabId, tabs.size) {
+    LaunchedEffect(activeTabId, tabs.size, autoPreviewEnabled) {
+        if (!autoPreviewEnabled) return@LaunchedEffect
         while (true) {
             delay(2500)
             runtime.refreshSnapshot(activeTabId)
@@ -122,7 +137,7 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
     }
 
     val activeSnapshot = snapshots[activeTabId]
-    val panelTabs = listOf("Chat", "Memory", "History", "Plan")
+    val panelTabs = listOf("Chat", "Memory", "History", "Plan", "Settings", "Tools")
 
     Column(modifier = Modifier.fillMaxSize().background(Color(0xFF0B0F14))) {
         TopAppBar(
@@ -130,15 +145,20 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
                 Column {
                     Text("Arena Browser Agent", color = Color.White)
                     Text(
-                        "Generic multi-tab browser assistant with preview, memory, and safe automation",
+                        aiStatus,
                         color = Color(0xFF94A3B8),
-                        style = MaterialTheme.typography.labelSmall
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             },
             actions = {
                 if (isWorking) {
                     Text("Working…", color = Color(0xFF38BDF8), modifier = Modifier.padding(end = 12.dp))
+                }
+                IconButton(onClick = { sidePanelIndex = 4 }) {
+                    Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
                 }
                 IconButton(onClick = {
                     val newId = viewModel.createTab("https://example.com")
@@ -210,7 +230,7 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
                 modifier = Modifier.width(360.dp).fillMaxHeight(),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF111827))
             ) {
-                TabRow(selectedTabIndex = sidePanelIndex) {
+                ScrollableTabRow(selectedTabIndex = sidePanelIndex, edgePadding = 8.dp) {
                     panelTabs.forEachIndexed { index, title ->
                         Tab(
                             selected = sidePanelIndex == index,
@@ -221,7 +241,9 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
                                     "Chat" -> Icon(Icons.Default.SmartToy, contentDescription = null)
                                     "Memory" -> Icon(Icons.Default.Memory, contentDescription = null)
                                     "History" -> Icon(Icons.Default.History, contentDescription = null)
-                                    else -> Icon(Icons.Default.Psychology, contentDescription = null)
+                                    "Plan" -> Icon(Icons.Default.Psychology, contentDescription = null)
+                                    "Settings" -> Icon(Icons.Default.Settings, contentDescription = null)
+                                    else -> Icon(Icons.Default.Tune, contentDescription = null)
                                 }
                             }
                         )
@@ -233,7 +255,28 @@ fun BrowserAgentScreen(viewModel: BrowserAgentViewModel) {
                         0 -> ChatPanel(chatMessages = chat)
                         1 -> MemoryPanel(memories = memories, clipboard = clipboard)
                         2 -> HistoryPanel(logs = logs, onClear = viewModel::clearHistory)
-                        else -> PlanPanel(plan = plan)
+                        3 -> PlanPanel(plan = plan)
+                        4 -> SettingsPanel(
+                            apiKey = settingsApiKey,
+                            model = settingsModel,
+                            baseUrl = settingsBaseUrl,
+                            maskedApiKey = viewModel.maskedApiKey(),
+                            aiStatus = aiStatus,
+                            autoPreviewEnabled = autoPreviewEnabled,
+                            retryCount = retryCount,
+                            onApiKeyChange = { settingsApiKey = it },
+                            onModelChange = { settingsModel = it },
+                            onBaseUrlChange = { settingsBaseUrl = it },
+                            onSave = { viewModel.saveAiConfig(settingsApiKey, settingsModel, settingsBaseUrl) },
+                            onTest = viewModel::testAiConfig,
+                            onAutoPreviewChange = viewModel::setAutoPreview,
+                            onRetryCountChange = viewModel::setRetryCount
+                        )
+                        else -> ToolsPanel(
+                            onTool = viewModel::submitQuickTool,
+                            onPrompt = { input = it; sidePanelIndex = 0 },
+                            clipboard = clipboard
+                        )
                     }
                 }
 
@@ -424,6 +467,156 @@ private fun PlanPanel(plan: PlanPreview?) {
                             listOfNotNull(action.url, action.selector, action.text, action.saveAs).joinToString(" | ").ifBlank { "tab=${action.tabId}" },
                             color = Color(0xFFCBD5E1)
                         )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsPanel(
+    apiKey: String,
+    model: String,
+    baseUrl: String,
+    maskedApiKey: String,
+    aiStatus: String,
+    autoPreviewEnabled: Boolean,
+    retryCount: Int,
+    onApiKeyChange: (String) -> Unit,
+    onModelChange: (String) -> Unit,
+    onBaseUrlChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onTest: () -> Unit,
+    onAutoPreviewChange: (Boolean) -> Unit,
+    onRetryCountChange: (Int) -> Unit
+) {
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) {
+        item {
+            Text("AI configuration", color = Color.White, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(4.dp))
+            Text("Saved key: $maskedApiKey", color = Color(0xFF94A3B8))
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = apiKey,
+                onValueChange = onApiKeyChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("API key") },
+                placeholder = { Text("Paste your Mistral API key") },
+                singleLine = true
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = model,
+                onValueChange = onModelChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Model") },
+                placeholder = { Text("mistral-small-latest") },
+                singleLine = true
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = baseUrl,
+                onValueChange = onBaseUrlChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Base URL") },
+                placeholder = { Text("https://api.mistral.ai") },
+                maxLines = 2
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onSave) { Text("Save") }
+                Button(onClick = onTest) { Text("Test") }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(aiStatus, color = Color(0xFF38BDF8))
+        }
+        item {
+            Spacer(Modifier.height(8.dp))
+            Text("Runtime options", color = Color.White, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Auto preview refresh", color = Color.White)
+                    Text("Continuously update DOM preview while browsing", color = Color(0xFF94A3B8), style = MaterialTheme.typography.labelSmall)
+                }
+                Switch(checked = autoPreviewEnabled, onCheckedChange = onAutoPreviewChange)
+            }
+            Spacer(Modifier.height(10.dp))
+            Text("Retry count", color = Color.White)
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                (1..5).forEach { count ->
+                    FilterChip(
+                        selected = retryCount == count,
+                        onClick = { onRetryCountChange(count) },
+                        label = { Text(count.toString()) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolsPanel(
+    onTool: (String) -> Unit,
+    onPrompt: (String) -> Unit,
+    clipboard: Map<String, String>
+) {
+    val quickPrompts = listOf(
+        "open https://example.com",
+        "search android webview compose",
+        "new tab https://developer.android.com",
+        "extract h1 as headline",
+        "click button.primary"
+    )
+
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) {
+        item {
+            Text("Quick tools", color = Color.White, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { onTool("new_tab") }) { Text("New tab") }
+                Button(onClick = { onTool("background_tab") }) { Text("BG tab") }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { onTool("refresh") }) { Text("Refresh") }
+                Button(onClick = { onTool("google") }) { Text("Google") }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { onTool("docs") }) { Text("Mistral docs") }
+                Button(onClick = { onTool("clear_history") }) { Text("Clear history") }
+            }
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = { onTool("clear_clipboard") }) { Text("Clear clipboard") }
+        }
+        item {
+            Spacer(Modifier.height(8.dp))
+            Text("Prompt presets", color = Color.White, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                quickPrompts.forEach { prompt ->
+                    AssistChip(onClick = { onPrompt(prompt) }, label = { Text(prompt) })
+                }
+            }
+        }
+        item {
+            Spacer(Modifier.height(8.dp))
+            Text("Clipboard aliases", color = Color.White, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            if (clipboard.isEmpty()) {
+                Text("No aliases saved.", color = Color(0xFF94A3B8))
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    clipboard.forEach { (key, value) ->
+                        AssistChip(onClick = {}, label = { Text("{{$key}} = ${value.take(28)}") })
                     }
                 }
             }
@@ -631,7 +824,7 @@ private class BrowserRuntime(
             "click" -> {
                 val webView = resolveTab(action.tabId)
                 val selector = action.selector ?: return RuntimeResult(false, "No selector provided.")
-                val payload = selectorActionWithRetry(webView) { jsCommand(webView, clickScript(selector)) }
+                val payload = selectorActionWithRetry(webView, attempts = viewModel.retryCount.value) { jsCommand(webView, clickScript(selector)) }
                 val ok = payload.optBoolean("ok", false)
                 refreshSnapshot(action.tabId ?: webViews.keys.first())
                 RuntimeResult(ok, payload.optString("message", if (ok) "Clicked." else "Click failed."))
@@ -640,7 +833,7 @@ private class BrowserRuntime(
                 val webView = resolveTab(action.tabId)
                 val selector = action.selector ?: return RuntimeResult(false, "No selector provided.")
                 val text = viewModel.resolveTemplate(action.text)
-                val payload = selectorActionWithRetry(webView) { jsCommand(webView, typeScript(selector, text)) }
+                val payload = selectorActionWithRetry(webView, attempts = viewModel.retryCount.value) { jsCommand(webView, typeScript(selector, text)) }
                 val ok = payload.optBoolean("ok", false)
                 refreshSnapshot(action.tabId ?: webViews.keys.first())
                 RuntimeResult(ok, payload.optString("message", if (ok) "Typed text." else "Typing failed."))
@@ -648,7 +841,7 @@ private class BrowserRuntime(
             "extract_text" -> {
                 val webView = resolveTab(action.tabId)
                 val selector = action.selector ?: return RuntimeResult(false, "No selector provided.")
-                val payload = selectorActionWithRetry(webView) { jsCommand(webView, extractScript(selector)) }
+                val payload = selectorActionWithRetry(webView, attempts = viewModel.retryCount.value) { jsCommand(webView, extractScript(selector)) }
                 val ok = payload.optBoolean("ok", false)
                 refreshSnapshot(action.tabId ?: webViews.keys.first())
                 RuntimeResult(ok, payload.optString("message", "Extracted text."), payload.optString("text"))

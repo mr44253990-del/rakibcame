@@ -15,6 +15,8 @@ This project was rebuilt from the original repo configuration into a **safe brow
 - Memory notes
 - Clipboard aliases such as `{{headline}}`
 - Optional Mistral planning from natural-language prompts
+- In-app AI settings screen for API key, model, base URL, test, save
+- Runtime tools panel for quick tabs, refresh, docs, and cleanup
 
 ## Safety limits
 
@@ -30,7 +32,8 @@ This app intentionally **does not automate**:
 1. Open in Android Studio.
 2. Create a `.env` file from `.env.example`.
 3. Add your own `MISTRAL_API_KEY`.
-4. Build and run.
+4. Or open the in-app **Settings** tab and save API key, model, and base URL there.
+5. Build and run.
 
 ## Example prompts
 
