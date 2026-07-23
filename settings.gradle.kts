@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Arena Browser Agent"
+rootProject.name = "Virtual Xbox Mapper"
 
 include(":app")

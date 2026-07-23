@@ -6,8 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 
 @Database(
-    entities = [ChatSession::class, ChatRecord::class, AgentMemory::class, ActionLog::class],
-    version = 2,
+    entities = [ControllerProfile::class, ButtonMapping::class],
+    version = 1,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -22,7 +22,7 @@ abstract class AppDatabase : RoomDatabase() {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
-                    "arena_browser_agent.db"
+                    "virtual_xbox_mapper.db"
                 ).fallbackToDestructiveMigration().build().also { INSTANCE = it }
             }
         }

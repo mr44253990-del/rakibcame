@@ -1,6 +1,6 @@
 {
-  "name": "arena-browser-agent",
-  "description": "A safe Android browser assistant with chat-first UI, live browser preview, multi-tab WebView control, memory, action history, DOM reading, generic click/type/extract actions, and optional Mistral AI planning.",
+  "name": "virtual-xbox-mapper",
+  "description": "An Android compatibility mapper app that detects a generic controller, captures button and joystick input, lets the user map it to an Xbox-style layout, stores mapping profiles, and runs a foreground compatibility service.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }

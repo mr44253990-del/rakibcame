@@ -1,57 +1,63 @@
-# Arena Browser Agent (Android)
+# Virtual Xbox Mapper (Android)
 
-This project was rebuilt from the original repo configuration into a **safe browser-assistant Android app**.
+This project was rebuilt into a new Android app focused on **generic controller to Xbox-style mapping**.
 
-## What it does
+## Current scope
 
-- Chat-first UI with separate chat sessions
-- Real Android `WebView` browser preview
-- Multi-tab browsing, including background tabs
-- Sequential multi-step task execution with Bengali status updates
-- Generic browser actions: open URL, new tab, switch tab, target a specific tab, close tab, back, forward, refresh, search, scroll
-- DOM actions: click CSS selector, type into selector, extract text from selector, extract full page text
-- Smart login helper for common email/username + password forms
-- Wait for full page load before final task response
-- Automatic retry for selector actions
-- Live DOM preview updates
-- Thinking / execution trace panel
-- Session-based action history
-- Session-based memory notes
-- Clipboard aliases such as `{{headline}}`
-- Optional Mistral planning from natural-language prompts
-- In-app AI settings screen for API key, model, base URL, test, save
-- Runtime tools panel for quick tabs, refresh, docs, new chat, and cleanup
+This version is a **non-root compatibility mapper** for Android.
 
-## Safety limits
+It provides:
+- USB / generic game controller detection
+- Live button and joystick input capture inside the app
+- Xbox-style layout preview
+- Mapping profiles saved with Room
+- Foreground service toggle for compatibility mode
+- Live trace panel showing what the app is doing
+- Remove-all-registered mappings option
 
-This app intentionally **does not automate**:
+## Important limitation
 
-- temporary email workflows
-- account creation abuse
-- OTP / verification harvesting
-- bypassing site restrictions
+On stock Android, a normal app usually **cannot create a true system-wide virtual Xbox controller** for all games.
+That normally needs **root + uinput** or lower-level system integration.
 
-## Setup
+So this build is designed as:
+- a real controller mapper UI
+- a live input monitor
+- a profile manager
+- a service-based compatibility scaffold
 
-1. Open in Android Studio.
-2. Create a `.env` file from `.env.example`.
-3. Add your own `MISTRAL_API_KEY`.
-4. Or open the in-app **Settings** tab and save API key, model, and base URL there.
-5. Build and run.
+## Main features
 
-## Example prompts
+- Detect USB / generic controller devices
+- Read `KeyEvent` and `MotionEvent` gamepad input
+- Map source buttons/axes to Xbox targets like:
+  - A / B / X / Y
+  - LB / RB / LT / RT
+  - LS / RS
+  - BACK / START
+  - D-Pad directions
+- Create multiple mapping profiles
+- Clear or remove saved mappings
+- See live pressed buttons on a visual Xbox layout
 
-- `open https://example.com`
-- `click button.primary`
-- `type hello world into input[name='q']`
-- `extract h1 as headline`
-- `copy page as page_text`
-- `new tab https://developer.android.com`
-- `tab 2 open https://kotlinlang.org`
-- `login your@email.com password your-password`
-- `remember use the second tab for docs`
+## Example use
+
+1. Connect your generic controller
+2. Open the app
+3. Press a controller button
+4. App shows the detected source input
+5. Tap the Xbox target button you want
+6. Save more mappings
+7. Turn service ON for compatibility mode
+
+## Future root version
+
+If you later want a true game-facing virtual Xbox output layer, the next step would be:
+- root device support
+- `/dev/uinput`
+- native virtual HID output
 
 ## Notes
 
-- The previous camera-specific code was removed.
-- Do **not** commit real API keys or GitHub tokens.
+- This app fully replaces the previous browser/AI concept.
+- Do not expect stock Android non-root mode to spoof a perfect Xbox HID device in every game.
