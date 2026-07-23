@@ -1,6 +1,6 @@
 {
-  "name": "rakibcame",
-  "description": "rakibcame is a high-performance offline AI voice-controlled and gesture-controlled DSLR style camera assistant with real-time on-device object/face recognition, professional manual controls, and a custom voice command system.",
+  "name": "virtual-xbox-mapper",
+  "description": "An Android compatibility mapper app that detects a generic controller, captures button and joystick input, lets the user map it to an Xbox-style layout, stores mapping profiles, and runs a foreground compatibility service.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }

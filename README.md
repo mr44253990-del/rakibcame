@@ -1,21 +1,77 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# Virtual Xbox Mapper (Android)
 
-# Run and deploy your AI Studio app
+This project was rebuilt into a new Android app focused on **generic controller to Xbox-style mapping**.
 
-This contains everything you need to run your app locally.
+## Current scope
 
-View your app in AI Studio: https://ai.studio/apps/622faed6-5419-4bde-a90e-40e68da4fdf8
+This version is a **non-root compatibility mapper** for Android.
 
-## Run Locally
+It provides:
+- USB / generic game controller detection
+- Live button and joystick input capture inside the app
+- Xbox-style layout preview
+- Mapping profiles saved with Room
+- Foreground service toggle for compatibility mode
+- Root / SU readiness check for broader game compatibility
+- Shizuku / Sui integration scaffold with provider config
+- Shizuku permission request flow inside the app
+- Root / ADB backend status display
+- `/dev/uinput` access diagnostic button
+- JNI + native uinput layer scaffold structure
+- Live trace panel showing what the app is doing
+- Remove-all-registered mappings option
 
-**Prerequisites:**  [Android Studio](https://developer.android.com/studio)
+## Important limitation
 
+On stock Android, a normal app usually **cannot create a true system-wide virtual Xbox controller** for all games.
+That normally needs **root + uinput** or lower-level system integration.
 
-1. Open Android Studio
-2. Select **Open** and choose the directory containing this project
-3. Allow Android Studio to fix any incompatibilities as it imports the project.
-4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)
-5. Remove this line from the app's `build.gradle.kts` file: `signingConfig = signingConfigs.getByName("debugConfig")`
-6. Run the app on an emulator or physical device
+So this build is designed as:
+- a real controller mapper UI
+- a live input monitor
+- a profile manager
+- a service-based compatibility scaffold
+
+## Main features
+
+- Detect USB / generic controller devices
+- Read `KeyEvent` and `MotionEvent` gamepad input
+- Map source buttons/axes to Xbox targets like:
+  - A / B / X / Y
+  - LB / RB / LT / RT
+  - LS / RS
+  - BACK / START
+  - D-Pad directions
+- Create multiple mapping profiles
+- Clear or remove saved mappings
+- See live pressed buttons on a visual Xbox layout
+
+## Example use
+
+1. Connect your generic controller
+2. Open the app
+3. Press a controller button
+4. App shows the detected source input
+5. Tap the Xbox target button you want
+6. Save more mappings
+7. Turn service ON for compatibility mode
+
+## Root / Sui path
+
+If you want the mapper to behave more like a controller outside the app, the practical next step is:
+- Magisk root or Sui / Shizuku root backend
+- writable `/dev/uinput`
+- native virtual HID output layer
+
+This build now includes:
+- root permission request trigger through `su`
+- Shizuku provider configuration and permission-request entry point
+- backend status for Shizuku root vs ADB shell
+- `/dev/uinput` writable diagnostic
+- root-ready service mode toggle
+- native `app/src/main/cpp` uinput scaffold files for the next phase
+
+## Notes
+
+- This app fully replaces the previous browser/AI concept.
+- Do not expect stock Android non-root mode to spoof a perfect Xbox HID device in every game.
