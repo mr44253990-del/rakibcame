@@ -183,6 +183,7 @@ class ControllerMapperViewModel(application: Application) : AndroidViewModel(app
 
     fun refreshConnectedDevices() {
         val devices = InputDevice.getDeviceIds()
+            .toList()
             .mapNotNull { id -> InputDevice.getDevice(id) }
             .filter { isGameController(it) }
             .map {
