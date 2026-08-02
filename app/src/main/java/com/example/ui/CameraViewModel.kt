@@ -58,6 +58,17 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     // Virtual panning offset coordinates for camera preview
     val panOffsetX = MutableStateFlow(0f)
     val panOffsetY = MutableStateFlow(0f)
+
+    // AI/EIS stabilizer settings and live gyro correction for the viewfinder.
+    val stabilizationMode = MutableStateFlow(prefs.getString("STABILIZATION_MODE", "AI Stabilized") ?: "AI Stabilized")
+    val stabilizationLevel = MutableStateFlow(prefs.getString("STABILIZATION_LEVEL", "High") ?: "High")
+    val stabilizationPreviewDelayMs = MutableStateFlow(prefs.getInt("STABILIZATION_DELAY_MS", 450))
+    val stabilizerOffsetX = MutableStateFlow(0f)
+    val stabilizerOffsetY = MutableStateFlow(0f)
+    val stabilizerRollDegrees = MutableStateFlow(0f)
+    val stabilizerMotionScore = MutableStateFlow(0f)
+    val stabilizerStatus = MutableStateFlow("GYRO_IDLE")
+    val isCameraXStabilizationSupported = MutableStateFlow(false)
     
     // Face gesture smiling/open mouth exposure controller toggle
     val isFaceGestureExposureEnabled = MutableStateFlow(prefs.getBoolean("FACE_GESTURE_EXPOSURE", true))
@@ -79,6 +90,12 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 } else if (key == "CAMERA_RESOLUTION") {
                     currentResolution.value = value
+                } else if (key == "STABILIZATION_MODE") {
+                    stabilizationMode.value = value
+                    stabilizationPreviewDelayMs.value = delayForStabilizationMode(value)
+                    editor.putInt("STABILIZATION_DELAY_MS", stabilizationPreviewDelayMs.value)
+                } else if (key == "STABILIZATION_LEVEL") {
+                    stabilizationLevel.value = value
                 }
             }
             is Boolean -> {
@@ -90,6 +107,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     "ML_POSE" -> isPoseDetectionEnabled.value = value
                     "ML_BARCODE" -> isBarcodeScanningEnabled.value = value
                     "FACE_GESTURE_EXPOSURE" -> isFaceGestureExposureEnabled.value = value
+                    "STABILIZATION_ACTIVE" -> isStabilizationActive.value = value
                 }
             }
             is Int -> {
@@ -123,7 +141,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     val whiteBalance = MutableStateFlow("Auto") // Auto, Incandescent, Fluorescent, Sunny, Cloudy
     val manualFocus = MutableStateFlow(1.0f) // 0.0f (Macro) to 1.0f (Infinity)
     val zoomLevel = MutableStateFlow(1.0f) // 1.0f to 10.0f
-    val isStabilizationActive = MutableStateFlow(true)
+    val isStabilizationActive = MutableStateFlow(prefs.getBoolean("STABILIZATION_ACTIVE", true))
     val isHdrActive = MutableStateFlow(true)
     val currentCameraLens = MutableStateFlow("BACK") // FRONT or BACK
     val currentCameraMode = MutableStateFlow("Pro") // Auto, Pro, Portrait, Night, Macro, Scanner
@@ -143,6 +161,33 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     // 3.5 ML Kit Components
     // --------------------------------------------------
     private val actionSound = android.media.MediaActionSound()
+
+    private val gyroStabilizationEngine = GyroStabilizationEngine(
+        context = application.applicationContext,
+        scope = viewModelScope,
+        enabled = isStabilizationActive,
+        mode = stabilizationMode,
+        level = stabilizationLevel,
+        previewDelayMs = stabilizationPreviewDelayMs
+    ) { state ->
+        stabilizerOffsetX.value = state.offsetX
+        stabilizerOffsetY.value = state.offsetY
+        stabilizerRollDegrees.value = state.rollDegrees
+        stabilizerMotionScore.value = state.motionScore
+        stabilizerStatus.value = state.source
+    }
+
+    fun updateCameraXStabilizationSupport(isSupported: Boolean) {
+        isCameraXStabilizationSupported.value = isSupported
+    }
+
+    private fun delayForStabilizationMode(mode: String): Int = when (mode) {
+        "Normal Video" -> 0
+        "Cinematic Mode" -> 300
+        "Action Mode" -> 650
+        "Extreme Stabilizer" -> 1000
+        else -> 450
+    }
 
     // List of pre-configured beautiful scenes to cycle through for simulation/real demonstration
     val scenes = listOf(
@@ -294,6 +339,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     // New: Horizon Level Tracking (Simulated for Demo/Pro HUD feel)
     val horizonAngle = MutableStateFlow(0f)
     init {
+        stabilizationPreviewDelayMs.value = delayForStabilizationMode(stabilizationMode.value)
+        gyroStabilizationEngine.start()
         viewModelScope.launch {
             var angle = 0f
             var delta = 0.2f
@@ -304,6 +351,12 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 horizonAngle.value = angle
             }
         }
+    }
+
+    override fun onCleared() {
+        gyroStabilizationEngine.stop()
+        actionSound.release()
+        super.onCleared()
     }
 
     fun startListening() {
@@ -502,6 +555,26 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     currentCameraMode.value = "Portrait"
                     speakNow(if (isBengali) "পোর্ট্রেট মোড লোড করা হয়েছে।" else "Lens configuration set to 50mm portrait blur.")
                 }
+                normalized.contains("action mode") || normalized.contains("অ্যাকশন মোড") || normalized.contains("সুপার স্টেডি") -> {
+                    updateSetting("STABILIZATION_MODE", "Action Mode")
+                    updateSetting("STABILIZATION_ACTIVE", true)
+                    speakNow(if (isBengali) "অ্যাকশন মোড স্ট্যাবিলাইজেশন চালু হয়েছে।" else "Action mode stabilization enabled.")
+                }
+                normalized.contains("extreme stabilizer") || normalized.contains("ultra steady") || normalized.contains("এক্সট্রিম") -> {
+                    updateSetting("STABILIZATION_MODE", "Extreme Stabilizer")
+                    updateSetting("STABILIZATION_LEVEL", "Ultra")
+                    updateSetting("STABILIZATION_ACTIVE", true)
+                    speakNow(if (isBengali) "এক্সট্রিম স্ট্যাবিলাইজার চালু হয়েছে।" else "Extreme stabilizer enabled.")
+                }
+                normalized.contains("stabilizer off") || normalized.contains("stabilization off") || normalized.contains("স্ট্যাবিলাইজার বন্ধ") -> {
+                    updateSetting("STABILIZATION_ACTIVE", false)
+                    speakNow(if (isBengali) "ভিডিও স্ট্যাবিলাইজার বন্ধ করা হয়েছে।" else "Video stabilizer disabled.")
+                }
+                normalized.contains("stabilizer on") || normalized.contains("stabilization on") || normalized.contains("স্ট্যাবিলাইজার চালু") -> {
+                    updateSetting("STABILIZATION_MODE", "AI Stabilized")
+                    updateSetting("STABILIZATION_ACTIVE", true)
+                    speakNow(if (isBengali) "এআই ভিডিও স্ট্যাবিলাইজার চালু হয়েছে।" else "AI video stabilizer enabled.")
+                }
                 normalized.contains("increase brightness") || normalized.contains("আলো বাড়াও") || normalized.contains("ব্রাইটনেস বাড়াও") || normalized.contains("ব্রাইটনেস বৃদ্ধি") -> {
                     exposureCompensation.value = (exposureCompensation.value + 1.0f).coerceAtMost(3.0f)
                     speakNow(if (isBengali) "ব্রাইটনেস বাড়ানো হয়েছে।" else "Exposure level boosted.")
@@ -643,7 +716,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
             put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
             put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
             if (android.os.Build.VERSION.SDK_INT > android.os.Build.VERSION_CODES.P) {
-                put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Movies/Camera")
+                    put(android.provider.MediaStore.Video.Media.RELATIVE_PATH, "Movies/RakibCame")
             }
         }
         val outputOptions = androidx.camera.video.MediaStoreOutputOptions.Builder(

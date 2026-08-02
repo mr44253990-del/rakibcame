@@ -594,6 +594,15 @@ fun CameraViewfinder(
     
     val panOffsetX by viewModel.panOffsetX.collectAsState()
     val panOffsetY by viewModel.panOffsetY.collectAsState()
+    val stabilizationOn by viewModel.isStabilizationActive.collectAsState()
+    val stabilizationMode by viewModel.stabilizationMode.collectAsState()
+    val stabilizationLevel by viewModel.stabilizationLevel.collectAsState()
+    val stabilizationDelayMs by viewModel.stabilizationPreviewDelayMs.collectAsState()
+    val stabilizerOffsetX by viewModel.stabilizerOffsetX.collectAsState()
+    val stabilizerOffsetY by viewModel.stabilizerOffsetY.collectAsState()
+    val stabilizerRoll by viewModel.stabilizerRollDegrees.collectAsState()
+    val activeFps by viewModel.currentFps.collectAsState()
+    val activeResolution by viewModel.currentResolution.collectAsState()
     
     // Auto-start persistent voice assistant
     LaunchedEffect(Unit) {
@@ -698,11 +707,25 @@ fun CameraViewfinder(
                 .fillMaxSize()
                 .then(if (visualBlurAmount > 0) Modifier.blur(visualBlurAmount.dp) else Modifier)
                 .graphicsLayer {
-                    translationX = panOffsetX
-                    translationY = panOffsetY
+                    // Manual pan + gyro/EIS preview correction. A tiny scale-up creates the
+                    // crop margin needed to hide border movement while stabilizing.
+                    translationX = panOffsetX + if (stabilizationOn) stabilizerOffsetX else 0f
+                    translationY = panOffsetY + if (stabilizationOn) stabilizerOffsetY else 0f
+                    rotationZ = if (stabilizationOn && stabilizationLevel != "Low") stabilizerRoll else 0f
+                    val cropScale = when {
+                        !stabilizationOn -> 1f
+                        stabilizationMode == "Extreme Stabilizer" -> 1.18f
+                        stabilizationMode == "Action Mode" -> 1.14f
+                        stabilizationLevel == "Ultra" -> 1.16f
+                        stabilizationLevel == "High" -> 1.10f
+                        stabilizationLevel == "Medium" -> 1.06f
+                        else -> 1.03f
+                    }
+                    scaleX = cropScale
+                    scaleY = cropScale
                 }
         ) {
-            key(isLensFront) {
+            key(isLensFront, stabilizationOn, stabilizationMode, stabilizationLevel, stabilizationDelayMs, activeFps, activeResolution) {
                 AndroidView(
                     factory = { ctx ->
                         val previewView = PreviewView(ctx).apply {
@@ -711,7 +734,7 @@ fun CameraViewfinder(
                         previewView
                     },
                     update = { previewView ->
-                        // Rebind only when lens changes
+                        // Rebind when lens or capture/stabilization profile changes.
                         val cameraProviderFuture = ProcessCameraProvider.getInstance(previewView.context)
                         cameraProviderFuture.addListener({
                             try {
@@ -722,10 +745,23 @@ fun CameraViewfinder(
                                 } else {
                                     CameraSelector.DEFAULT_BACK_CAMERA
                                 }
-                                
-                                val preview = Preview.Builder().build().also {
-                                    it.setSurfaceProvider(previewView.surfaceProvider)
-                                }
+
+                                val targetFpsRange = android.util.Range(activeFps, activeFps)
+                                val previewInfo = cameraProvider.getCameraInfo(selector)
+                                val isNativePreviewStabilizationSupported = try {
+                                    Preview.getPreviewCapabilities(previewInfo).isStabilizationSupported
+                                } catch (_: Throwable) { false }
+                                viewModel.updateCameraXStabilizationSupport(isNativePreviewStabilizationSupported)
+
+                                val preview = Preview.Builder()
+                                    .setTargetFrameRate(targetFpsRange)
+                                    .apply {
+                                        if (stabilizationOn && isNativePreviewStabilizationSupported) {
+                                            setPreviewStabilizationEnabled(true)
+                                        }
+                                    }
+                                    .build()
+                                    .also { it.setSurfaceProvider(previewView.surfaceProvider) }
                                 
                                 val imageCapture = androidx.camera.core.ImageCapture.Builder().build()
                                 
@@ -740,10 +776,24 @@ fun CameraViewfinder(
                                         it.setAnalyzer(ContextCompat.getMainExecutor(previewView.context), analyzer)
                                     }
 
+                                val quality = when (activeResolution) {
+                                    "4K" -> androidx.camera.video.Quality.UHD
+                                    "720P" -> androidx.camera.video.Quality.HD
+                                    else -> androidx.camera.video.Quality.FHD
+                                }
                                 val recorder = androidx.camera.video.Recorder.Builder()
-                                    .setQualitySelector(androidx.camera.video.QualitySelector.from(androidx.camera.video.Quality.HIGHEST, androidx.camera.video.FallbackStrategy.lowerQualityOrHigherThan(androidx.camera.video.Quality.SD)))
+                                    .setQualitySelector(
+                                        androidx.camera.video.QualitySelector.from(
+                                            quality,
+                                            androidx.camera.video.FallbackStrategy.lowerQualityOrHigherThan(androidx.camera.video.Quality.SD)
+                                        )
+                                    )
                                     .build()
-                                val videoCapture = androidx.camera.video.VideoCapture.withOutput(recorder)
+                                val videoCapture = androidx.camera.video.VideoCapture.Builder(recorder)
+                                    .apply {
+                                        if (stabilizationOn) setVideoStabilizationEnabled(true)
+                                    }
+                                    .build()
 
                                 cameraProvider.unbindAll()
                                 val camera = cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, imageCapture, imageAnalyzer, videoCapture)
@@ -755,7 +805,7 @@ fun CameraViewfinder(
                                 // Re-apply states
                                 CameraGlobals.cameraControl?.setZoomRatio(zoomValue)
                             } catch (e: Throwable) {
-                                // ignore
+                                viewModel.stabilizerStatus.value = "CAMERA_BIND_ERROR"
                             }
                         }, ContextCompat.getMainExecutor(previewView.context))
                     },
@@ -921,6 +971,11 @@ fun DslrHudTopBar(
 ) {
     val listeningState by viewModel.audioListeningState.collectAsState()
     val stabilizationOn by viewModel.isStabilizationActive.collectAsState()
+    val stabilizationMode by viewModel.stabilizationMode.collectAsState()
+    val stabilizationLevel by viewModel.stabilizationLevel.collectAsState()
+    val stabilizationDelayMs by viewModel.stabilizationPreviewDelayMs.collectAsState()
+    val nativeEisSupported by viewModel.isCameraXStabilizationSupported.collectAsState()
+    val gyroStatus by viewModel.stabilizerStatus.collectAsState()
     val hdrOn by viewModel.isHdrActive.collectAsState()
     val cameraMode by viewModel.currentCameraMode.collectAsState()
     val activeFps by viewModel.currentFps.collectAsState()
@@ -1089,16 +1144,19 @@ fun DslrHudTopBar(
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    modifier = Modifier.clickable { viewModel.isStabilizationActive.value = !stabilizationOn }
+                    modifier = Modifier.clickable { viewModel.updateSetting("STABILIZATION_ACTIVE", !stabilizationOn) }
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Camera,
-                        contentDescription = "Stabilizer",
+                        imageVector = Icons.Default.Videocam,
+                        contentDescription = "EIS Stabilizer",
                         tint = if (stabilizationOn) LedGreen else Color.Gray,
                         modifier = Modifier.size(14.dp)
                     )
                     Text(
-                        text = "OIS",
+                        text = if (stabilizationOn) {
+                            val nativeTag = if (nativeEisSupported) "HW" else gyroStatus
+                            "EIS ${stabilizationLevel.uppercase()} ${stabilizationDelayMs}MS $nativeTag"
+                        } else "EIS OFF",
                         color = if (stabilizationOn) LedGreen else Color.Gray,
                         fontSize = 10.sp,
                         fontFamily = FontFamily.Monospace,
@@ -1706,11 +1764,14 @@ fun ModeWheelChoiceSpinner(
     viewModel: CameraViewModel,
     modifier: Modifier = Modifier
 ) {
-    val modes = listOf("Auto", "Pro", "Portrait", "Night", "Macro", "Scanner")
+    val modes = listOf("Normal Video", "AI Stabilized", "Action Mode", "Cinematic Mode", "Extreme Stabilizer", "Pro", "Portrait", "Night", "Macro", "Scanner")
     val selectedMode by viewModel.currentCameraMode.collectAsState()
+    val selectedStabilizationMode by viewModel.stabilizationMode.collectAsState()
+    val stabilizerModes = setOf("Normal Video", "AI Stabilized", "Action Mode", "Cinematic Mode", "Extreme Stabilizer")
 
     Row(
         modifier = modifier
+            .horizontalScroll(rememberScrollState())
             .clip(RoundedCornerShape(12.dp))
             .background(CharcoalGlass)
             .border(BorderStroke(0.5.dp, Color(0x33FFFFFF)), RoundedCornerShape(12.dp))
@@ -1718,17 +1779,26 @@ fun ModeWheelChoiceSpinner(
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        modes.take(3).forEach { mode ->
+        modes.forEach { mode ->
+            val isSelected = if (mode in stabilizerModes) selectedStabilizationMode == mode else selectedMode == mode
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
-                    .background(if (selectedMode == mode) GoldMuted else Color.Transparent)
-                    .clickable { viewModel.currentCameraMode.value = mode }
+                    .background(if (isSelected) GoldMuted else Color.Transparent)
+                    .clickable {
+                        if (mode in stabilizerModes) {
+                            viewModel.updateSetting("STABILIZATION_MODE", mode)
+                            viewModel.updateSetting("STABILIZATION_ACTIVE", mode != "Normal Video")
+                            viewModel.currentCameraMode.value = "Pro"
+                        } else {
+                            viewModel.currentCameraMode.value = mode
+                        }
+                    }
                     .padding(horizontal = 8.dp, vertical = 4.dp)
             ) {
                 Text(
                     text = mode.uppercase(),
-                    color = if (selectedMode == mode) Color.Black else Color.White.copy(alpha = 0.6f),
+                    color = if (isSelected) Color.Black else Color.White.copy(alpha = 0.6f),
                     fontSize = 9.sp,
                     fontWeight = FontWeight.Black,
                     fontFamily = FontFamily.Monospace

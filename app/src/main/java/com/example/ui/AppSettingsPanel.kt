@@ -40,6 +40,11 @@ fun AppSettingsPanel(
     val isMlBarcode by viewModel.isBarcodeScanningEnabled.collectAsState()
     
     val isFaceGestureExposure by viewModel.isFaceGestureExposureEnabled.collectAsState()
+    val isStabilizationActive by viewModel.isStabilizationActive.collectAsState()
+    val stabilizationMode by viewModel.stabilizationMode.collectAsState()
+    val stabilizationLevel by viewModel.stabilizationLevel.collectAsState()
+    val stabilizationDelayMs by viewModel.stabilizationPreviewDelayMs.collectAsState()
+    val nativeEisSupported by viewModel.isCameraXStabilizationSupported.collectAsState()
     val currentFps by viewModel.currentFps.collectAsState()
     val currentResolution by viewModel.currentResolution.collectAsState()
 
@@ -144,7 +149,94 @@ fun AppSettingsPanel(
                 }
             }
 
-            // Section 2: Camera Capture Specs
+            // Section 2: AI / Electronic Image Stabilization (EIS)
+            Column {
+                SettingsCategoryTitle("AI VIDEO STABILIZATION / EIS", Icons.Default.Speed)
+                Spacer(modifier = Modifier.height(10.dp))
+
+                SettingToggleRow(
+                    label = "Stabilized Preview & Recording",
+                    info = if (nativeEisSupported) "CameraX hardware preview/video EIS + gyro smoothing" else "Gyroscope based smooth preview; CameraX video EIS requested when supported",
+                    checked = isStabilizationActive
+                ) { viewModel.updateSetting("STABILIZATION_ACTIVE", it) }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Text("Stabilizer Mode", color = Color.Gray, fontSize = 11.sp)
+                Spacer(modifier = Modifier.height(6.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("Normal Video", "AI Stabilized", "Action Mode", "Cinematic Mode", "Extreme Stabilizer").chunked(2).forEach { rowItems ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            rowItems.forEach { mode ->
+                                val selected = stabilizationMode == mode
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(7.dp))
+                                        .background(if (selected) GoldMuted else Color(0x0EFFFFFF))
+                                        .clickable {
+                                            viewModel.updateSetting("STABILIZATION_MODE", mode)
+                                            viewModel.updateSetting("STABILIZATION_ACTIVE", mode != "Normal Video")
+                                        }
+                                        .padding(vertical = 7.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = mode,
+                                        color = if (selected) Color.Black else Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                    )
+                                }
+                            }
+                            if (rowItems.size == 1) Spacer(modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Text("Stabilization Level", color = Color.Gray, fontSize = 11.sp)
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0x0EFFFFFF))
+                        .padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    listOf("Low", "Medium", "High", "Ultra").forEach { level ->
+                        val selected = stabilizationLevel == level
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (selected) GoldMuted else Color.Transparent)
+                                .clickable { viewModel.updateSetting("STABILIZATION_LEVEL", level) }
+                                .padding(vertical = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = level,
+                                color = if (selected) Color.Black else Color.White,
+                                fontSize = 10.sp,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Preview buffer: ${stabilizationDelayMs}ms • crop margin is applied automatically to hide borders.",
+                    color = Color(0xFF9CA3AF),
+                    fontSize = 10.sp
+                )
+            }
+
+            // Section 3: Camera Capture Specs
             Column {
                 SettingsCategoryTitle("CAMERA METRICS", Icons.Default.Videocam)
                 Spacer(modifier = Modifier.height(10.dp))

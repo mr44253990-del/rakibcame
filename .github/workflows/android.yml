@@ -12,6 +12,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
@@ -23,28 +25,20 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # ✅ Install Gradle manually
-      - name: Install Gradle
-        run: |
-          sudo apt update
-          sudo apt install -y gradle
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
 
-      # ✅ Generate Gradle Wrapper automatically
-      - name: Generate Gradle Wrapper
-        run: |
-          gradle wrapper --gradle-version 9.3.1
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
 
-      # ✅ Fix permission
-      - name: Grant permission
+      - name: Grant Gradle permission
         run: chmod +x gradlew
 
-      # ✅ Build APK
       - name: Build Debug APK
-        run: ./gradlew assembleDebug
+        run: ./gradlew :app:assembleDebug --stacktrace
 
-      # ✅ Upload APK as artifact
-      - name: Upload APK
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
+          name: rakibcame-stabilizer-debug-apk
           path: app/build/outputs/apk/debug/*.apk

@@ -1,6 +1,6 @@
 {
-  "name": "rakibcame",
-  "description": "rakibcame is a high-performance offline AI voice-controlled and gesture-controlled DSLR style camera assistant with real-time on-device object/face recognition, professional manual controls, and a custom voice command system.",
+  "name": "RakibCame Stabilizer",
+  "description": "A CameraX Android camera app with AI/EIS style video stabilization modes, native CameraX stabilization when supported, gyroscope-based preview smoothing, voice controls, DSLR HUD controls, ML Kit overlays, and stabilized MediaStore video recording.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": ["MAJOR_CAPABILITY_CAMERA", "MAJOR_CAPABILITY_ON_DEVICE_SENSORS", "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
