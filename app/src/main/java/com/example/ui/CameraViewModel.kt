@@ -353,12 +353,6 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    override fun onCleared() {
-        gyroStabilizationEngine.stop()
-        actionSound.release()
-        super.onCleared()
-    }
-
     fun startListening() {
         val intent = recognizerIntent ?: return
         val mainExecutor = androidx.core.content.ContextCompat.getMainExecutor(getApplication())
@@ -932,8 +926,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     // Clean-up
     // --------------------------------------------------
     override fun onCleared() {
-        super.onCleared()
+        gyroStabilizationEngine.stop()
+        actionSound.release()
         tts?.stop()
         tts?.shutdown()
+        super.onCleared()
     }
 }
