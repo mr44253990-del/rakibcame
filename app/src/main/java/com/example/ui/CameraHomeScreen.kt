@@ -38,6 +38,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
@@ -88,6 +89,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -205,18 +207,19 @@ private fun CleanStabilizerCamera(viewModel: CameraViewModel, modifier: Modifier
     val filter by viewModel.currentFilter.collectAsState()
     val theme by viewModel.currentTheme.collectAsState()
     val flashOn by viewModel.isFlashEnabled.collectAsState()
-    val delayedSaved by viewModel.isDelayedPreviewEnabled.collectAsState()
     val cinematicBars by viewModel.isCinematicBarsEnabled.collectAsState()
+    val exposureValue by viewModel.exposureCompensation.collectAsState()
     val gyroX by viewModel.stabilizerOffsetX.collectAsState()
     val gyroY by viewModel.stabilizerOffsetY.collectAsState()
     val gyroRoll by viewModel.stabilizerRollDegrees.collectAsState()
 
     var settingsOpen by remember { mutableStateOf(false) }
     var zoomMenuOpen by remember { mutableStateOf(false) }
-    var delayedPreview by remember { mutableStateOf(delayedSaved) }
-    LaunchedEffect(delayedSaved) { delayedPreview = delayedSaved }
+    val delayedPreview = false
     var delayedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var bindError by remember { mutableStateOf<String?>(null) }
+    var liveFps by remember { mutableStateOf(0) }
+    var showExposureHud by remember { mutableStateOf(false) }
     val executor = remember { Executors.newSingleThreadExecutor() }
 
     DisposableEffect(lifecycleOwner) {
@@ -234,6 +237,23 @@ private fun CleanStabilizerCamera(viewModel: CameraViewModel, modifier: Modifier
         }
     }
 
+    LaunchedEffect(exposureValue) {
+        val state = CameraGlobals.cameraInfo?.exposureState
+        val range = state?.exposureCompensationRange
+        if (range != null) {
+            val normalized = ((exposureValue + 3f) / 6f).coerceIn(0f, 1f)
+            val index = (range.lower + ((range.upper - range.lower) * normalized)).roundToInt()
+            CameraGlobals.cameraControl?.setExposureCompensationIndex(index)
+        }
+    }
+
+    LaunchedEffect(showExposureHud, exposureValue) {
+        if (showExposureHud) {
+            kotlinx.coroutines.delay(1200)
+            showExposureHud = false
+        }
+    }
+
     BackHandler(enabled = settingsOpen) { settingsOpen = false }
 
     Box(modifier.fillMaxSize()) {
@@ -243,6 +263,15 @@ private fun CleanStabilizerCamera(viewModel: CameraViewModel, modifier: Modifier
         )
         val smoothPreviewModifier = Modifier
             .fillMaxSize()
+            .pointerInput(Unit) {
+                detectTransformGestures { _, _, zoomChange, _ ->
+                    if (zoomChange != 1f) {
+                        val next = (viewModel.zoomLevel.value * zoomChange).coerceIn(1f, 10f)
+                        viewModel.updateSetting("ZOOM_LEVEL", next)
+                        CameraGlobals.cameraControl?.setZoomRatio(next)
+                    }
+                }
+            }
             .graphicsLayer {
                 scaleX = cropScale * zoom.coerceIn(1f, 10f)
                 scaleY = cropScale * zoom.coerceIn(1f, 10f)
@@ -274,6 +303,7 @@ private fun CleanStabilizerCamera(viewModel: CameraViewModel, modifier: Modifier
                         enableDelayedAnalyzer = delayedPreview,
                         delayMs = delayMs.coerceIn(0, 2000),
                         onFrame = { delayedBitmap = it },
+                        onFps = { liveFps = it },
                         onError = { bindError = it }
                     )
                 },
@@ -306,8 +336,19 @@ private fun CleanStabilizerCamera(viewModel: CameraViewModel, modifier: Modifier
             mode = stabilizationMode,
             level = stabilizationLevel,
             delayMs = if (delayedPreview) delayMs else 0,
+            liveFps = liveFps,
             nativeEis = nativeEis,
             bindError = bindError
+        )
+
+        ExposureStrip(
+            exposure = exposureValue,
+            visible = showExposureHud,
+            onChange = { value ->
+                viewModel.exposureCompensation.value = value
+                showExposureHud = true
+            },
+            modifier = Modifier.align(Alignment.CenterStart).padding(start = 10.dp)
         )
 
         Box(Modifier.align(Alignment.CenterEnd).padding(end = 10.dp), contentAlignment = Alignment.CenterEnd) {
@@ -356,8 +397,6 @@ private fun CleanStabilizerCamera(viewModel: CameraViewModel, modifier: Modifier
             ) {
                 StabilizerSettingsSheet(
                     viewModel = viewModel,
-                    delayedPreview = delayedPreview,
-                    onDelayedPreview = { delayedPreview = it; viewModel.updateSetting("DELAYED_PREVIEW", it) },
                     onClose = { scope.launch { settingsOpen = false } }
                 )
             }
@@ -373,6 +412,7 @@ private fun StabilizerTopBar(
     mode: String,
     level: String,
     delayMs: Int,
+    liveFps: Int,
     nativeEis: Boolean,
     bindError: String?
 ) {
@@ -385,7 +425,7 @@ private fun StabilizerTopBar(
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         GlassChip(
-            text = bindError ?: "${mode.take(10)} • ${level} • ${delayMs}ms • ${if (nativeEis) "HW" else "Gyro"}",
+            text = bindError ?: "${mode.take(10)} • ${level} • ${if (nativeEis) "HW" else "Gyro"} • ${liveFps}fps",
             color = if (bindError == null) Color.White else Warn
         )
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -468,6 +508,39 @@ private fun GlassChip(text: String, color: Color = Color.White) {
 }
 
 @Composable
+private fun ExposureStrip(exposure: Float, visible: Boolean, onChange: (Float) -> Unit, modifier: Modifier = Modifier) {
+    val percent = (((exposure + 3f) / 6f) * 100f).roundToInt().coerceIn(0, 100)
+    Column(
+        modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color.White.copy(alpha = if (visible) 0.18f else 0.09f))
+            .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(999.dp))
+            .pointerInput(Unit) {
+                detectDragGestures { change, dragAmount ->
+                    change.consume()
+                    onChange((exposure - dragAmount.y / 120f).coerceIn(-3f, 3f))
+                }
+            }
+            .padding(horizontal = 7.dp, vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Text("☀", color = Color.White, fontSize = 15.sp)
+        if (visible) Text("$percent%", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        Box(Modifier.width(4.dp).height(72.dp).clip(RoundedCornerShape(999.dp)).background(Color.White.copy(alpha = 0.20f))) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .width(4.dp)
+                    .height((72 * percent / 100f).dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(Warn)
+            )
+        }
+    }
+}
+
+@Composable
 private fun ZoomPill(zoom: Float, modifier: Modifier = Modifier) {
     Box(
         modifier
@@ -483,17 +556,21 @@ private fun ZoomPill(zoom: Float, modifier: Modifier = Modifier) {
 
 @Composable
 private fun ZoomPopupWheel(zoom: Float, accent: Color, onZoom: (Float) -> Unit, modifier: Modifier = Modifier) {
+    var workingZoom by remember { mutableFloatStateOf(zoom) }
+    LaunchedEffect(zoom) { workingZoom = zoom }
     Box(
         modifier
-            .size(128.dp)
+            .size(156.dp)
             .clip(CircleShape)
-            .background(Color.White.copy(alpha = 0.82f))
-            .border(1.dp, Color.White.copy(alpha = 0.75f), CircleShape)
+            .background(Color.White.copy(alpha = 0.86f))
+            .border(1.dp, Color.White.copy(alpha = 0.85f), CircleShape)
             .pointerInput(Unit) {
                 detectDragGestures { change, dragAmount ->
                     change.consume()
-                    val delta = (dragAmount.x - dragAmount.y) / 105f
-                    onZoom((zoom + delta).coerceIn(1f, 10f))
+                    // Premium-camera style: drag up = zoom in, drag down = zoom out.
+                    val delta = (-dragAmount.y + dragAmount.x * 0.25f) / 150f
+                    workingZoom = (workingZoom + delta).coerceIn(1f, 10f)
+                    onZoom(workingZoom)
                 }
             },
         contentAlignment = Alignment.Center
@@ -515,8 +592,6 @@ private fun ZoomPopupWheel(zoom: Float, accent: Color, onZoom: (Float) -> Unit, 
 @Composable
 private fun StabilizerSettingsSheet(
     viewModel: CameraViewModel,
-    delayedPreview: Boolean,
-    onDelayedPreview: (Boolean) -> Unit,
     onClose: () -> Unit
 ) {
     val stabilizationOn by viewModel.isStabilizationActive.collectAsState()
@@ -530,6 +605,8 @@ private fun StabilizerSettingsSheet(
     val cinematicBars by viewModel.isCinematicBarsEnabled.collectAsState()
     val fpsBoost by viewModel.isFpsBoostEnabled.collectAsState()
     val flashOn by viewModel.isFlashEnabled.collectAsState()
+    val capabilities by viewModel.cameraCapabilitiesSummary.collectAsState()
+    val supportedQualities by viewModel.supportedVideoQualities.collectAsState()
     val accent = themeAccent(theme)
 
     Column(
@@ -547,9 +624,10 @@ private fun StabilizerSettingsSheet(
             IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White) }
         }
 
+        GlassInfoCard(capabilities)
+
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             CompactToggle("EIS", stabilizationOn, accent) { viewModel.updateSetting("STABILIZATION_ACTIVE", it) }
-            CompactToggle("Delay", delayedPreview, accent, onDelayedPreview)
             CompactToggle("60FPS", fpsBoost, accent) {
                 viewModel.updateSetting("FPS_BOOST", it)
                 viewModel.updateSetting("CAMERA_FPS", if (it) 60 else 30)
@@ -569,7 +647,7 @@ private fun StabilizerSettingsSheet(
         SegmentedRow(listOf("Low", "Medium", "High", "Ultra"), level, accent) { viewModel.updateSetting("STABILIZATION_LEVEL", it) }
 
         Text("Video", color = Color(0xFFB8C1CC), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-        SegmentedRow(listOf("720P", "1080P", "4K"), resolution, accent) { viewModel.updateSetting("CAMERA_RESOLUTION", it) }
+        SegmentedRow(supportedQualities.ifEmpty { listOf("720P", "1080P") }, resolution, accent) { viewModel.updateSetting("CAMERA_RESOLUTION", it) }
         SegmentedRow(listOf("30", "60"), fps.toString(), accent) {
             viewModel.updateSetting("CAMERA_FPS", it.toInt())
             viewModel.updateSetting("FPS_BOOST", it == "60")
@@ -595,6 +673,20 @@ private fun StabilizerSettingsSheet(
             }
         }
         Spacer(Modifier.height(10.dp))
+    }
+}
+
+@Composable
+private fun GlassInfoCard(text: String) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color.White.copy(alpha = 0.10f))
+            .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(18.dp))
+            .padding(10.dp)
+    ) {
+        Text(text, color = Color(0xFFE5EEF8), fontSize = 11.sp, fontWeight = FontWeight.Medium)
     }
 }
 
@@ -702,6 +794,24 @@ private fun themeAccent(theme: String): Color = when (theme) {
     else -> Accent
 }
 
+private fun buildCameraCapabilityText(
+    cameraInfo: androidx.camera.core.CameraInfo,
+    qualities: List<String>,
+    nativeStabilization: Boolean
+): String {
+    return try {
+        val c2 = androidx.camera.camera2.interop.Camera2CameraInfo.from(cameraInfo)
+        val size = c2.getCameraCharacteristic(android.hardware.camera2.CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)
+        val mp = if (size != null) (size.width.toLong() * size.height.toLong() / 1_000_000.0) else null
+        val focal = c2.getCameraCharacteristic(android.hardware.camera2.CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+            ?.joinToString { String.format(Locale.US, "%.1fmm", it) } ?: "Auto lens"
+        val mpText = mp?.let { String.format(Locale.US, "%.1fMP", it) } ?: "Camera"
+        "$mpText • Video: ${qualities.joinToString()} • $focal • Stabilizer: ${if (nativeStabilization) "Hardware + Gyro" else "Gyro fallback"}"
+    } catch (_: Throwable) {
+        "Video: ${qualities.joinToString()} • Stabilizer: ${if (nativeStabilization) "Hardware + Gyro" else "Gyro fallback"}"
+    }
+}
+
 private fun bindCameraUseCases(
     context: Context,
     lifecycleOwner: androidx.lifecycle.LifecycleOwner,
@@ -715,6 +825,7 @@ private fun bindCameraUseCases(
     enableDelayedAnalyzer: Boolean,
     delayMs: Int,
     onFrame: (Bitmap) -> Unit,
+    onFps: (Int) -> Unit,
     onError: (String?) -> Unit
 ) {
     val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
@@ -725,6 +836,19 @@ private fun bindCameraUseCases(
             val cameraInfo = provider.getCameraInfo(selector)
             val nativeStabilization = try { Preview.getPreviewCapabilities(cameraInfo).isStabilizationSupported } catch (_: Throwable) { false }
             viewModel.updateCameraXStabilizationSupport(nativeStabilization)
+            val supportedQualityLabels = try {
+                QualitySelector.getSupportedQualities(cameraInfo).mapNotNull { quality ->
+                    when (quality) {
+                        Quality.UHD -> "4K"
+                        Quality.FHD -> "1080P"
+                        Quality.HD -> "720P"
+                        Quality.SD -> "480P"
+                        else -> null
+                    }
+                }
+            } catch (_: Throwable) { listOf("720P", "1080P") }
+            val capabilityText = buildCameraCapabilityText(cameraInfo, supportedQualityLabels, nativeStabilization)
+            viewModel.updateCameraCapabilities(capabilityText, supportedQualityLabels)
 
             val targetFps = fps.coerceIn(30, 60)
             val preview = Preview.Builder()
@@ -747,22 +871,17 @@ private fun bindCameraUseCases(
 
             val imageAnalysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .setTargetResolution(Size(960, 540))
+                .setTargetResolution(Size(640, 360))
                 .build()
                 .also { analysis ->
-                    if (enableDelayedAnalyzer) {
-                        val analyzer = DelayedPreviewAnalyzer(delayMs, onFrame)
-                        analysis.setAnalyzer(analyzerExecutor, analyzer)
-                    }
+                    val analyzer = SmartPreviewAnalyzer(delayMs, enableDelayedAnalyzer, onFrame, onFps)
+                    analysis.setAnalyzer(analyzerExecutor, analyzer)
                 }
 
             provider.unbindAll()
-            val camera = if (enableDelayedAnalyzer) {
-                provider.bindToLifecycle(lifecycleOwner, selector, preview, videoCapture, imageAnalysis)
-            } else {
-                provider.bindToLifecycle(lifecycleOwner, selector, preview, videoCapture)
-            }
+            val camera = provider.bindToLifecycle(lifecycleOwner, selector, preview, videoCapture, imageAnalysis)
             CameraGlobals.cameraControl = camera.cameraControl
+            CameraGlobals.cameraInfo = camera.cameraInfo
             CameraGlobals.videoCapture = videoCapture
             CameraGlobals.cameraControl?.setZoomRatio(viewModel.zoomLevel.value.coerceIn(1f, 10f))
             CameraGlobals.cameraControl?.enableTorch(viewModel.isFlashEnabled.value)
@@ -773,24 +892,37 @@ private fun bindCameraUseCases(
     }, ContextCompat.getMainExecutor(context))
 }
 
-private class DelayedPreviewAnalyzer(
+private class SmartPreviewAnalyzer(
     private val delayMs: Int,
-    private val onFrame: (Bitmap) -> Unit
+    private val delayedPreview: Boolean,
+    private val onFrame: (Bitmap) -> Unit,
+    private val onFps: (Int) -> Unit
 ) : ImageAnalysis.Analyzer {
     private data class Frame(val time: Long, val bitmap: Bitmap)
     private val queue = ArrayDeque<Frame>()
     private val main = Handler(Looper.getMainLooper())
+    private var frameCounter = 0
+    private var lastFpsTime = System.currentTimeMillis()
 
     override fun analyze(image: ImageProxy) {
         try {
-            val bitmap = imageProxyToBitmap(image)
-            if (bitmap != null) {
-                val now = System.currentTimeMillis()
-                queue.addLast(Frame(now, bitmap))
-                while (queue.size > 90) queue.removeFirst().bitmap.recycle()
-                var selected: Frame? = null
-                while (queue.size > 1 && now - queue.first().time >= delayMs) selected = queue.removeFirst()
-                selected?.let { frame -> main.post { onFrame(frame.bitmap) } }
+            val now = System.currentTimeMillis()
+            frameCounter++
+            if (now - lastFpsTime >= 1000) {
+                val fps = frameCounter
+                frameCounter = 0
+                lastFpsTime = now
+                main.post { onFps(fps) }
+            }
+            if (delayedPreview) {
+                val bitmap = imageProxyToBitmap(image)
+                if (bitmap != null) {
+                    queue.addLast(Frame(now, bitmap))
+                    while (queue.size > 90) queue.removeFirst().bitmap.recycle()
+                    var selected: Frame? = null
+                    while (queue.size > 1 && now - queue.first().time >= delayMs) selected = queue.removeFirst()
+                    selected?.let { frame -> main.post { onFrame(frame.bitmap) } }
+                }
             }
         } finally {
             image.close()

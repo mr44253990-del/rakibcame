@@ -82,6 +82,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     val isDelayedPreviewEnabled = MutableStateFlow(prefs.getBoolean("DELAYED_PREVIEW", true))
     val isCinematicBarsEnabled = MutableStateFlow(prefs.getBoolean("CINEMATIC_BARS", false))
     val isFpsBoostEnabled = MutableStateFlow(prefs.getBoolean("FPS_BOOST", true))
+    val cameraCapabilitiesSummary = MutableStateFlow("Detecting camera capabilities…")
+    val supportedVideoQualities = MutableStateFlow(listOf("720P", "1080P"))
 
     fun updateSetting(key: String, value: Any) {
         val editor = prefs.edit()
@@ -197,6 +199,11 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     fun updateCameraXStabilizationSupport(isSupported: Boolean) {
         isCameraXStabilizationSupported.value = isSupported
+    }
+
+    fun updateCameraCapabilities(summary: String, qualities: List<String>) {
+        cameraCapabilitiesSummary.value = summary
+        if (qualities.isNotEmpty()) supportedVideoQualities.value = qualities.distinct()
     }
 
     private fun delayForStabilizationMode(mode: String): Int = when (mode) {
@@ -421,12 +428,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun speakNow(message: String) {
-        if (isRecordingVideo.value) {
-            assistantBubble.value = message
-            return 
-        }
+        // Voice/TTS output is disabled so assistant speech is never captured in recorded videos.
         assistantBubble.value = message
-        tts?.speak(message, TextToSpeech.QUEUE_FLUSH, null, null)
+        tts?.stop()
     }
 
     fun toggleCameraLens() {
@@ -766,7 +770,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         viewModelScope.launch {
-            speakNow("Starting cinematic video recording.")
+            tts?.stop()
             isRecordingVideo.value = true
             videoDurationSeconds.value = 0
             isVideoPaused.value = false
@@ -787,14 +791,12 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         if (!isRecordingVideo.value || isVideoPaused.value) return
         CameraGlobals.activeRecording?.pause()
         isVideoPaused.value = true
-        speakNow("Recording paused.")
     }
 
     fun resumeVideo() {
         if (!isRecordingVideo.value || !isVideoPaused.value) return
         CameraGlobals.activeRecording?.resume()
         isVideoPaused.value = false
-        speakNow("Recording resumed.")
     }
 
     fun stopVideo() {
@@ -802,7 +804,6 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         CameraGlobals.activeRecording?.stop()
         this@CameraViewModel.recordingJob?.cancel()
         isRecordingVideo.value = false
-        speakNow("Video captured.")
     }
 
     // --------------------------------------------------

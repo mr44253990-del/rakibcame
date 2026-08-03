@@ -18,15 +18,18 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    ndk {
+      abiFilters += listOf("arm64-v8a")
+    }
   }
 
   signingConfigs {
     create("release") {
       val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
       storeFile = file(keystorePath)
-      storePassword = System.getenv("STORE_PASSWORD")
+      storePassword = System.getenv("STORE_PASSWORD") ?: "rakibcame123"
       keyAlias = "upload"
-      keyPassword = System.getenv("KEY_PASSWORD")
+      keyPassword = System.getenv("KEY_PASSWORD") ?: "rakibcame123"
     }
   }
 
@@ -117,4 +120,33 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
+}
+
+// Generate a local release keystore once if no external KEYSTORE_PATH is provided.
+// It is intentionally not regenerated if the file already exists.
+tasks.register("generateUploadKeystore") {
+  doLast {
+    val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
+    val keystoreFile = file(keystorePath)
+    if (!keystoreFile.exists()) {
+      exec {
+        commandLine(
+          "keytool", "-genkeypair",
+          "-v",
+          "-keystore", keystoreFile.absolutePath,
+          "-storepass", (System.getenv("STORE_PASSWORD") ?: "rakibcame123"),
+          "-keypass", (System.getenv("KEY_PASSWORD") ?: "rakibcame123"),
+          "-alias", "upload",
+          "-keyalg", "RSA",
+          "-keysize", "2048",
+          "-validity", "10000",
+          "-dname", "CN=RakibCame, OU=Camera, O=RakibCame, L=Dhaka, S=Dhaka, C=BD"
+        )
+      }
+    }
+  }
+}
+
+tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+  dependsOn("generateUploadKeystore")
 }
