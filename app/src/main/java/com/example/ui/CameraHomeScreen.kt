@@ -152,6 +152,15 @@ fun CameraHomeScreen(
     }
 }
 
+// Compatibility entry point used by the existing panorama screen.
+@Composable
+fun CameraViewfinder(
+    viewModel: CameraViewModel,
+    modifier: Modifier = Modifier
+) {
+    CleanStabilizerCamera(viewModel = viewModel, modifier = modifier)
+}
+
 @Composable
 private fun PermissionScreen(onRequest: () -> Unit) {
     Box(
