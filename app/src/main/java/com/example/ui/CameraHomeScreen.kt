@@ -38,6 +38,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -209,6 +210,10 @@ private fun CleanStabilizerCamera(viewModel: CameraViewModel, modifier: Modifier
     val flashOn by viewModel.isFlashEnabled.collectAsState()
     val cinematicBars by viewModel.isCinematicBarsEnabled.collectAsState()
     val exposureValue by viewModel.exposureCompensation.collectAsState()
+    val videoMessage by viewModel.videoSaveMessage.collectAsState()
+    val isRendering by viewModel.isRenderingVideo.collectAsState()
+    val renderProgress by viewModel.renderProgress.collectAsState()
+    val renderEta by viewModel.renderEtaText.collectAsState()
     val gyroX by viewModel.stabilizerOffsetX.collectAsState()
     val gyroY by viewModel.stabilizerOffsetY.collectAsState()
     val gyroRoll by viewModel.stabilizerRollDegrees.collectAsState()
@@ -266,15 +271,16 @@ private fun CleanStabilizerCamera(viewModel: CameraViewModel, modifier: Modifier
             .pointerInput(Unit) {
                 detectTransformGestures { _, _, zoomChange, _ ->
                     if (zoomChange != 1f) {
-                        val next = (viewModel.zoomLevel.value * zoomChange).coerceIn(1f, 10f)
-                        viewModel.updateSetting("ZOOM_LEVEL", next)
-                        CameraGlobals.cameraControl?.setZoomRatio(next)
+                        val next = (viewModel.zoomLevel.value * zoomChange).coerceIn(1f, maxSupportedZoom())
+                        applyCameraZoom(viewModel, next)
                     }
                 }
             }
             .graphicsLayer {
-                scaleX = cropScale * zoom.coerceIn(1f, 10f)
-                scaleY = cropScale * zoom.coerceIn(1f, 10f)
+                // Only stabilization crop is applied here. Zoom is applied through CameraControl
+                // so recorded video gets the same zoom as the preview.
+                scaleX = cropScale
+                scaleY = cropScale
                 translationX = if (stabilizationOn) gyroX else 0f
                 translationY = if (stabilizationOn) gyroY else 0f
                 rotationZ = if (stabilizationOn && stabilizationLevel != "Low") gyroRoll else 0f
@@ -341,6 +347,16 @@ private fun CleanStabilizerCamera(viewModel: CameraViewModel, modifier: Modifier
             bindError = bindError
         )
 
+        Box(
+            Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(onLongPress = {
+                        showExposureHud = true
+                    })
+                }
+        )
+
         ExposureStrip(
             exposure = exposureValue,
             visible = showExposureHud,
@@ -351,16 +367,21 @@ private fun CleanStabilizerCamera(viewModel: CameraViewModel, modifier: Modifier
             modifier = Modifier.align(Alignment.CenterStart).padding(start = 10.dp)
         )
 
+        SaveAndRenderOverlay(
+            message = videoMessage,
+            isRendering = isRendering,
+            progress = renderProgress,
+            eta = renderEta,
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 52.dp)
+        )
+
         Box(Modifier.align(Alignment.CenterEnd).padding(end = 10.dp), contentAlignment = Alignment.CenterEnd) {
             ZoomPill(zoom = zoom, modifier = Modifier.clickable { zoomMenuOpen = !zoomMenuOpen })
             AnimatedVisibility(visible = zoomMenuOpen) {
                 ZoomPopupWheel(
                     zoom = zoom,
                     accent = themeAccent(theme),
-                    onZoom = { value ->
-                        viewModel.updateSetting("ZOOM_LEVEL", value)
-                        CameraGlobals.cameraControl?.setZoomRatio(value)
-                    },
+                    onZoom = { value -> applyCameraZoom(viewModel, value) },
                     modifier = Modifier.padding(end = 54.dp)
                 )
             }
@@ -508,7 +529,31 @@ private fun GlassChip(text: String, color: Color = Color.White) {
 }
 
 @Composable
+private fun SaveAndRenderOverlay(message: String, isRendering: Boolean, progress: Int, eta: String, modifier: Modifier = Modifier) {
+    AnimatedVisibility(visible = message.isNotBlank() || isRendering, modifier = modifier) {
+        Column(
+            Modifier
+                .clip(RoundedCornerShape(22.dp))
+                .background(Color.White.copy(alpha = 0.16f))
+                .border(1.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(22.dp))
+                .padding(horizontal = 14.dp, vertical = 9.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(if (isRendering) "Rendering smooth copy… $progress%" else message, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            if (isRendering) {
+                Box(Modifier.width(160.dp).height(4.dp).clip(RoundedCornerShape(99.dp)).background(Color.White.copy(alpha = 0.20f))) {
+                    Box(Modifier.fillMaxWidth(progress / 100f).height(4.dp).clip(RoundedCornerShape(99.dp)).background(Accent))
+                }
+                Text(eta, color = Color(0xFFD8E1EA), fontSize = 10.sp)
+            }
+        }
+    }
+}
+
+@Composable
 private fun ExposureStrip(exposure: Float, visible: Boolean, onChange: (Float) -> Unit, modifier: Modifier = Modifier) {
+    if (!visible) return
     val percent = (((exposure + 3f) / 6f) * 100f).roundToInt().coerceIn(0, 100)
     Column(
         modifier
@@ -518,7 +563,8 @@ private fun ExposureStrip(exposure: Float, visible: Boolean, onChange: (Float) -
             .pointerInput(Unit) {
                 detectDragGestures { change, dragAmount ->
                     change.consume()
-                    onChange((exposure - dragAmount.y / 120f).coerceIn(-3f, 3f))
+                    // Drag up = brighter, drag down = darker.
+                    onChange((exposure - dragAmount.y / 180f).coerceIn(-3f, 3f))
                 }
             }
             .padding(horizontal = 7.dp, vertical = 10.dp),
@@ -605,6 +651,7 @@ private fun StabilizerSettingsSheet(
     val cinematicBars by viewModel.isCinematicBarsEnabled.collectAsState()
     val fpsBoost by viewModel.isFpsBoostEnabled.collectAsState()
     val flashOn by viewModel.isFlashEnabled.collectAsState()
+    val smoothRender by viewModel.isSmoothRenderEnabled.collectAsState()
     val capabilities by viewModel.cameraCapabilitiesSummary.collectAsState()
     val supportedQualities by viewModel.supportedVideoQualities.collectAsState()
     val accent = themeAccent(theme)
@@ -637,6 +684,7 @@ private fun StabilizerSettingsSheet(
                 viewModel.updateSetting("FLASH", it)
                 CameraGlobals.cameraControl?.enableTorch(it)
             }
+            CompactToggle("Render", smoothRender, accent) { viewModel.updateSetting("SMOOTH_RENDER", it) }
         }
 
         Text("Stabilizer", color = Color(0xFFB8C1CC), fontWeight = FontWeight.Bold, fontSize = 12.sp)
@@ -660,16 +708,12 @@ private fun StabilizerSettingsSheet(
         SegmentedRow(listOf("Emerald", "Blue", "Purple", "Gold", "Red"), theme, accent) { viewModel.updateSetting("UI_THEME", it) }
 
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            ZoomWheel(zoom = zoom, accent = accent, onZoom = { value ->
-                viewModel.updateSetting("ZOOM_LEVEL", value)
-                CameraGlobals.cameraControl?.setZoomRatio(value)
-            })
+            ZoomWheel(zoom = zoom, accent = accent, onZoom = { value -> applyCameraZoom(viewModel, value) })
             Column(Modifier.weight(1f)) {
                 Text("Zoom ${String.format(Locale.US, "%.1f", zoom)}×", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Black)
-                Slider(value = zoom, onValueChange = {
-                    viewModel.updateSetting("ZOOM_LEVEL", it)
-                    CameraGlobals.cameraControl?.setZoomRatio(it)
-                }, valueRange = 1f..10f)
+                Slider(value = zoom.coerceIn(1f, maxSupportedZoom()), onValueChange = {
+                    applyCameraZoom(viewModel, it)
+                }, valueRange = 1f..maxSupportedZoom())
             }
         }
         Spacer(Modifier.height(10.dp))
@@ -794,6 +838,24 @@ private fun themeAccent(theme: String): Color = when (theme) {
     else -> Accent
 }
 
+private fun maxSupportedZoom(): Float {
+    return try {
+        CameraGlobals.cameraInfo?.zoomState?.value?.maxZoomRatio?.coerceAtLeast(1f) ?: 10f
+    } catch (_: Throwable) { 10f }
+}
+
+private fun applyCameraZoom(viewModel: CameraViewModel, requested: Float) {
+    val clamped = requested.coerceIn(1f, maxSupportedZoom())
+    viewModel.updateSetting("ZOOM_LEVEL", clamped)
+    val control = CameraGlobals.cameraControl ?: return
+    try {
+        control.setZoomRatio(clamped)
+    } catch (_: Throwable) {
+        val max = maxSupportedZoom().coerceAtLeast(1.01f)
+        control.setLinearZoom(((clamped - 1f) / (max - 1f)).coerceIn(0f, 1f))
+    }
+}
+
 private fun buildCameraCapabilityText(
     cameraInfo: androidx.camera.core.CameraInfo,
     qualities: List<String>,
@@ -883,7 +945,7 @@ private fun bindCameraUseCases(
             CameraGlobals.cameraControl = camera.cameraControl
             CameraGlobals.cameraInfo = camera.cameraInfo
             CameraGlobals.videoCapture = videoCapture
-            CameraGlobals.cameraControl?.setZoomRatio(viewModel.zoomLevel.value.coerceIn(1f, 10f))
+            applyCameraZoom(viewModel, viewModel.zoomLevel.value)
             CameraGlobals.cameraControl?.enableTorch(viewModel.isFlashEnabled.value)
             onError(null)
         } catch (t: Throwable) {

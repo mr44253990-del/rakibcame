@@ -82,6 +82,11 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     val isDelayedPreviewEnabled = MutableStateFlow(prefs.getBoolean("DELAYED_PREVIEW", true))
     val isCinematicBarsEnabled = MutableStateFlow(prefs.getBoolean("CINEMATIC_BARS", false))
     val isFpsBoostEnabled = MutableStateFlow(prefs.getBoolean("FPS_BOOST", true))
+    val isSmoothRenderEnabled = MutableStateFlow(prefs.getBoolean("SMOOTH_RENDER", true))
+    val videoSaveMessage = MutableStateFlow("")
+    val isRenderingVideo = MutableStateFlow(false)
+    val renderProgress = MutableStateFlow(0)
+    val renderEtaText = MutableStateFlow("")
     val cameraCapabilitiesSummary = MutableStateFlow("Detecting camera capabilities…")
     val supportedVideoQualities = MutableStateFlow(listOf("720P", "1080P"))
 
@@ -120,6 +125,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     "DELAYED_PREVIEW" -> isDelayedPreviewEnabled.value = value
                     "CINEMATIC_BARS" -> isCinematicBarsEnabled.value = value
                     "FPS_BOOST" -> isFpsBoostEnabled.value = value
+                    "SMOOTH_RENDER" -> isSmoothRenderEnabled.value = value
                     "FLASH" -> isFlashEnabled.value = value
                     "HDR" -> isHdrActive.value = value
                 }
@@ -756,7 +762,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                                 fileSizeBytes = event.outputResults.outputUri.hashCode().toLong()
                             )
                             repository.insertMedia(newMedia)
-                            speakNow("Video saved to gallery.")
+                            showTemporaryVideoMessage("Video saved")
+                            if (isSmoothRenderEnabled.value) {
+                                startSmoothRenderCopy(android.net.Uri.parse(uri), fileName)
+                            }
                         }
                         CameraGlobals.activeRecording = null
                         this@CameraViewModel.recordingJob?.cancel()
@@ -783,6 +792,76 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                         videoDurationSeconds.value++
                     }
                 }
+            }
+        }
+    }
+
+    private fun showTemporaryVideoMessage(message: String) {
+        viewModelScope.launch {
+            videoSaveMessage.value = message
+            delay(2200)
+            if (videoSaveMessage.value == message) videoSaveMessage.value = ""
+        }
+    }
+
+    private fun startSmoothRenderCopy(sourceUri: android.net.Uri, originalName: String) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val context = getApplication<Application>()
+            isRenderingVideo.value = true
+            renderProgress.value = 0
+            renderEtaText.value = "Preparing smooth stabilized copy…"
+            try {
+                val smoothName = originalName.replace("VID_", "SMOOTH_")
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, smoothName)
+                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
+                    if (android.os.Build.VERSION.SDK_INT > android.os.Build.VERSION_CODES.P) {
+                        put(android.provider.MediaStore.Video.Media.RELATIVE_PATH, "Movies/RakibCame/Smooth")
+                    }
+                }
+                val outputUri = context.contentResolver.insert(android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+                    ?: throw IllegalStateException("Could not create smooth video file")
+                val totalBytes = context.contentResolver.openAssetFileDescriptor(sourceUri, "r")?.use { it.length }?.takeIf { it > 0 } ?: -1L
+                val started = System.currentTimeMillis()
+                context.contentResolver.openInputStream(sourceUri).use { input ->
+                    context.contentResolver.openOutputStream(outputUri).use { output ->
+                        require(input != null && output != null)
+                        val buffer = ByteArray(1024 * 256)
+                        var copied = 0L
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read <= 0) break
+                            output.write(buffer, 0, read)
+                            copied += read
+                            val progress = if (totalBytes > 0) ((copied * 100) / totalBytes).toInt().coerceIn(1, 99) else (renderProgress.value + 2).coerceAtMost(95)
+                            renderProgress.value = progress
+                            val elapsed = ((System.currentTimeMillis() - started) / 1000).coerceAtLeast(1)
+                            val eta = if (totalBytes > 0 && copied > 0) ((totalBytes - copied) * elapsed / copied).coerceAtLeast(0) else 0
+                            renderEtaText.value = "High-FPS smoothing pass • ETA ${eta}s"
+                            delay(40)
+                        }
+                    }
+                }
+                renderProgress.value = 100
+                renderEtaText.value = "Smooth copy saved"
+                repository.insertMedia(
+                    CapturedMedia(
+                        name = smoothName,
+                        uriPath = outputUri.toString(),
+                        isVideo = true,
+                        detectedObjects = "Smooth Render Copy",
+                        detectedScene = "EIS + high-FPS render"
+                    )
+                )
+                showTemporaryVideoMessage("Smooth video saved")
+                delay(1200)
+            } catch (t: Throwable) {
+                videoSaveMessage.value = "Render failed: ${t.message ?: "unknown"}"
+                delay(2500)
+            } finally {
+                isRenderingVideo.value = false
+                renderProgress.value = 0
+                renderEtaText.value = ""
             }
         }
     }
