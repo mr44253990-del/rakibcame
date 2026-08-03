@@ -49,7 +49,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private val prefs = application.getSharedPreferences("CameraSettings", android.content.Context.MODE_PRIVATE)
 
     val currentLanguage = MutableStateFlow(prefs.getString("LANGUAGE", "English") ?: "English")
-    val isAutoListenEnabled = MutableStateFlow(prefs.getBoolean("AUTO_LISTEN", true))
+    // Voice command UI is disabled in the rebuilt camera; keep the flag false by default.
+    val isAutoListenEnabled = MutableStateFlow(prefs.getBoolean("AUTO_LISTEN", false))
     val isObjectDetectionEnabled = MutableStateFlow(prefs.getBoolean("ML_OBJECT", true))
     val isFaceDetectionEnabled = MutableStateFlow(prefs.getBoolean("ML_FACE", true))
     val isPoseDetectionEnabled = MutableStateFlow(prefs.getBoolean("ML_POSE", true))
@@ -74,8 +75,13 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     val isFaceGestureExposureEnabled = MutableStateFlow(prefs.getBoolean("FACE_GESTURE_EXPOSURE", true))
     
     // Live FPS and Resolution options
-    val currentFps = MutableStateFlow(prefs.getInt("CAMERA_FPS", 30))
+    val currentFps = MutableStateFlow(prefs.getInt("CAMERA_FPS", 60))
     val currentResolution = MutableStateFlow(prefs.getString("CAMERA_RESOLUTION", "1080P") ?: "1080P")
+    val currentFilter = MutableStateFlow(prefs.getString("CAMERA_FILTER", "Natural") ?: "Natural")
+    val currentTheme = MutableStateFlow(prefs.getString("UI_THEME", "Emerald") ?: "Emerald")
+    val isDelayedPreviewEnabled = MutableStateFlow(prefs.getBoolean("DELAYED_PREVIEW", true))
+    val isCinematicBarsEnabled = MutableStateFlow(prefs.getBoolean("CINEMATIC_BARS", false))
+    val isFpsBoostEnabled = MutableStateFlow(prefs.getBoolean("FPS_BOOST", true))
 
     fun updateSetting(key: String, value: Any) {
         val editor = prefs.edit()
@@ -85,9 +91,6 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 if (key == "LANGUAGE") {
                     currentLanguage.value = value
                     updateTTSLanguage()
-                    if (audioListeningState.value == "Idle" && isAutoListenEnabled.value) {
-                         startListening()
-                    }
                 } else if (key == "CAMERA_RESOLUTION") {
                     currentResolution.value = value
                 } else if (key == "STABILIZATION_MODE") {
@@ -96,6 +99,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     editor.putInt("STABILIZATION_DELAY_MS", stabilizationPreviewDelayMs.value)
                 } else if (key == "STABILIZATION_LEVEL") {
                     stabilizationLevel.value = value
+                } else if (key == "CAMERA_FILTER") {
+                    currentFilter.value = value
+                } else if (key == "UI_THEME") {
+                    currentTheme.value = value
                 }
             }
             is Boolean -> {
@@ -108,12 +115,23 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     "ML_BARCODE" -> isBarcodeScanningEnabled.value = value
                     "FACE_GESTURE_EXPOSURE" -> isFaceGestureExposureEnabled.value = value
                     "STABILIZATION_ACTIVE" -> isStabilizationActive.value = value
+                    "DELAYED_PREVIEW" -> isDelayedPreviewEnabled.value = value
+                    "CINEMATIC_BARS" -> isCinematicBarsEnabled.value = value
+                    "FPS_BOOST" -> isFpsBoostEnabled.value = value
+                    "FLASH" -> isFlashEnabled.value = value
+                    "HDR" -> isHdrActive.value = value
                 }
             }
             is Int -> {
                 editor.putInt(key, value)
                 if (key == "CAMERA_FPS") {
                     currentFps.value = value
+                }
+            }
+            is Float -> {
+                editor.putFloat(key, value)
+                if (key == "ZOOM_LEVEL") {
+                    zoomLevel.value = value
                 }
             }
         }
@@ -140,9 +158,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     val exposureCompensation = MutableStateFlow(0.0f) // -3.0f to +3.0f
     val whiteBalance = MutableStateFlow("Auto") // Auto, Incandescent, Fluorescent, Sunny, Cloudy
     val manualFocus = MutableStateFlow(1.0f) // 0.0f (Macro) to 1.0f (Infinity)
-    val zoomLevel = MutableStateFlow(1.0f) // 1.0f to 10.0f
+    val zoomLevel = MutableStateFlow(prefs.getFloat("ZOOM_LEVEL", 1.0f)) // 1.0f to 10.0f
     val isStabilizationActive = MutableStateFlow(prefs.getBoolean("STABILIZATION_ACTIVE", true))
-    val isHdrActive = MutableStateFlow(true)
+    val isHdrActive = MutableStateFlow(prefs.getBoolean("HDR", true))
     val currentCameraLens = MutableStateFlow("BACK") // FRONT or BACK
     val currentCameraMode = MutableStateFlow("Pro") // Auto, Pro, Portrait, Night, Macro, Scanner
 
@@ -154,7 +172,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     val assistantBubble = MutableStateFlow("Ready for voice action.")
     val audioListeningState = MutableStateFlow("Idle") // Idle, Listening...
     val shutterTimer = MutableStateFlow(0) // 0, 3, 10
-    val isFlashEnabled = MutableStateFlow(false)
+    val isFlashEnabled = MutableStateFlow(prefs.getBoolean("FLASH", false))
     val detectedObjectResults = MutableStateFlow<List<DetectedObjectData>>(emptyList())
 
     // --------------------------------------------------

@@ -38,6 +38,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -57,6 +59,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ColorLens
+import androidx.compose.material.icons.filled.FlashOff
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -197,12 +202,19 @@ private fun CleanStabilizerCamera(viewModel: CameraViewModel, modifier: Modifier
     val stabilizationLevel by viewModel.stabilizationLevel.collectAsState()
     val delayMs by viewModel.stabilizationPreviewDelayMs.collectAsState()
     val nativeEis by viewModel.isCameraXStabilizationSupported.collectAsState()
+    val filter by viewModel.currentFilter.collectAsState()
+    val theme by viewModel.currentTheme.collectAsState()
+    val flashOn by viewModel.isFlashEnabled.collectAsState()
+    val delayedSaved by viewModel.isDelayedPreviewEnabled.collectAsState()
+    val cinematicBars by viewModel.isCinematicBarsEnabled.collectAsState()
     val gyroX by viewModel.stabilizerOffsetX.collectAsState()
     val gyroY by viewModel.stabilizerOffsetY.collectAsState()
     val gyroRoll by viewModel.stabilizerRollDegrees.collectAsState()
 
     var settingsOpen by remember { mutableStateOf(false) }
-    var delayedPreview by remember { mutableStateOf(true) }
+    var zoomMenuOpen by remember { mutableStateOf(false) }
+    var delayedPreview by remember { mutableStateOf(delayedSaved) }
+    LaunchedEffect(delayedSaved) { delayedPreview = delayedSaved }
     var delayedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var bindError by remember { mutableStateOf<String?>(null) }
     val executor = remember { Executors.newSingleThreadExecutor() }
@@ -224,7 +236,7 @@ private fun CleanStabilizerCamera(viewModel: CameraViewModel, modifier: Modifier
 
     BackHandler(enabled = settingsOpen) { settingsOpen = false }
 
-    Box(modifier.fillMaxSize().background(Color.Black)) {
+    Box(modifier.fillMaxSize()) {
         val cropScale by animateFloatAsState(
             targetValue = if (stabilizationOn) cropScaleFor(stabilizationMode, stabilizationLevel) else 1f,
             label = "cropScale"
@@ -279,11 +291,13 @@ private fun CleanStabilizerCamera(viewModel: CameraViewModel, modifier: Modifier
                     modifier = smoothPreviewModifier
                 )
             } else {
-                Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
-                    Text("Buffering stable preview...", color = Color.White)
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    GlassChip("Buffering ${delayMs}ms")
                 }
             }
         }
+
+        FilterOverlay(filter = filter, cinematicBars = cinematicBars)
 
         StabilizerTopBar(
             isRecording = isRecording,
@@ -296,7 +310,20 @@ private fun CleanStabilizerCamera(viewModel: CameraViewModel, modifier: Modifier
             bindError = bindError
         )
 
-        ZoomPill(zoom = zoom, modifier = Modifier.align(Alignment.CenterEnd).padding(end = 14.dp))
+        Box(Modifier.align(Alignment.CenterEnd).padding(end = 10.dp), contentAlignment = Alignment.CenterEnd) {
+            ZoomPill(zoom = zoom, modifier = Modifier.clickable { zoomMenuOpen = !zoomMenuOpen })
+            AnimatedVisibility(visible = zoomMenuOpen) {
+                ZoomPopupWheel(
+                    zoom = zoom,
+                    accent = themeAccent(theme),
+                    onZoom = { value ->
+                        viewModel.updateSetting("ZOOM_LEVEL", value)
+                        CameraGlobals.cameraControl?.setZoomRatio(value)
+                    },
+                    modifier = Modifier.padding(end = 54.dp)
+                )
+            }
+        }
 
         BottomControls(
             isRecording = isRecording,
@@ -307,8 +334,15 @@ private fun CleanStabilizerCamera(viewModel: CameraViewModel, modifier: Modifier
             onPauseResume = {
                 if (isPaused) viewModel.resumeVideo() else viewModel.pauseVideo()
             },
+            flashOn = flashOn,
+            accent = themeAccent(theme),
             onSwitchLens = {
                 viewModel.currentCameraLens.value = if (lens == "BACK") "FRONT" else "BACK"
+            },
+            onFlash = {
+                val next = !flashOn
+                viewModel.updateSetting("FLASH", next)
+                CameraGlobals.cameraControl?.enableTorch(next)
             },
             onSettings = { settingsOpen = true },
             modifier = Modifier.align(Alignment.BottomCenter)
@@ -323,7 +357,7 @@ private fun CleanStabilizerCamera(viewModel: CameraViewModel, modifier: Modifier
                 StabilizerSettingsSheet(
                     viewModel = viewModel,
                     delayedPreview = delayedPreview,
-                    onDelayedPreview = { delayedPreview = it },
+                    onDelayedPreview = { delayedPreview = it; viewModel.updateSetting("DELAYED_PREVIEW", it) },
                     onClose = { scope.launch { settingsOpen = false } }
                 )
             }
@@ -346,28 +380,17 @@ private fun StabilizerTopBar(
         Modifier
             .fillMaxWidth()
             .statusBarsPadding()
-            .padding(12.dp)
-            .clip(RoundedCornerShape(18.dp))
-            .background(Panel)
-            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(18.dp))
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.Top,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Column {
-            Text("RakibCame", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-            Text(
-                text = bindError ?: "${mode} • ${level} • ${delayMs}ms buffer • ${if (nativeEis) "HW EIS" else "Gyro EIS"}",
-                color = if (bindError == null) Color(0xFFB8C1CC) else Warn,
-                fontSize = 11.sp
-            )
-        }
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (isRecording) {
-                Box(Modifier.size(9.dp).clip(CircleShape).background(if (isPaused) Warn else Danger))
-                Text(if (isPaused) "PAUSED" else "REC", color = if (isPaused) Warn else Danger, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-            }
-            Text(formatTime(seconds), color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Black)
+        GlassChip(
+            text = bindError ?: "${mode.take(10)} • ${level} • ${delayMs}ms • ${if (nativeEis) "HW" else "Gyro"}",
+            color = if (bindError == null) Color.White else Warn
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (isRecording) GlassChip(if (isPaused) "PAUSE" else "REC", if (isPaused) Warn else Danger)
+            GlassChip(formatTime(seconds), Color.White)
         }
     }
 }
@@ -376,42 +399,71 @@ private fun StabilizerTopBar(
 private fun BottomControls(
     isRecording: Boolean,
     isPaused: Boolean,
+    flashOn: Boolean,
+    accent: Color,
     onRecord: () -> Unit,
     onPauseResume: () -> Unit,
     onSwitchLens: () -> Unit,
+    onFlash: () -> Unit,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Row(
         modifier
-            .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(18.dp)
-            .clip(RoundedCornerShape(28.dp))
-            .background(Panel)
-            .padding(horizontal = 18.dp, vertical = 14.dp),
+            .padding(bottom = 10.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color.White.copy(alpha = 0.10f))
+            .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(999.dp))
+            .padding(horizontal = 10.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceEvenly
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, contentDescription = "Menu", tint = Color.White, modifier = Modifier.size(28.dp)) }
-        IconButton(onClick = onSwitchLens) { Icon(Icons.Default.Cameraswitch, contentDescription = "Switch camera", tint = Color.White, modifier = Modifier.size(30.dp)) }
+        MiniIconButton(onClick = onSettings) { Icon(Icons.Default.Settings, contentDescription = "Menu", tint = Color.White, modifier = Modifier.size(19.dp)) }
+        MiniIconButton(onClick = onSwitchLens) { Icon(Icons.Default.Cameraswitch, contentDescription = "Switch camera", tint = Color.White, modifier = Modifier.size(20.dp)) }
+        MiniIconButton(onClick = onFlash) { Icon(if (flashOn) Icons.Default.FlashOn else Icons.Default.FlashOff, contentDescription = "Flash", tint = if (flashOn) Warn else Color.White, modifier = Modifier.size(20.dp)) }
 
         Box(
             Modifier
-                .size(78.dp)
+                .size(54.dp)
                 .clip(CircleShape)
-                .background(if (isRecording) Danger else Color.White)
-                .border(5.dp, Color.White.copy(alpha = 0.28f), CircleShape)
+                .background(if (isRecording) Danger else Color.White.copy(alpha = 0.96f))
+                .border(3.dp, accent.copy(alpha = 0.45f), CircleShape)
                 .clickable(onClick = onRecord),
             contentAlignment = Alignment.Center
         ) {
-            Icon(if (isRecording) Icons.Default.Stop else Icons.Default.RadioButtonChecked, contentDescription = "Record", tint = if (isRecording) Color.White else Danger, modifier = Modifier.size(42.dp))
+            Icon(if (isRecording) Icons.Default.Stop else Icons.Default.RadioButtonChecked, contentDescription = "Record", tint = if (isRecording) Color.White else Danger, modifier = Modifier.size(30.dp))
         }
 
-        IconButton(enabled = isRecording, onClick = onPauseResume) {
-            Icon(if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause, contentDescription = "Pause or resume", tint = if (isRecording) Color.White else Color.Gray, modifier = Modifier.size(34.dp))
+        MiniIconButton(enabled = isRecording, onClick = onPauseResume) {
+            Icon(if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause, contentDescription = "Pause or resume", tint = if (isRecording) Color.White else Color.Gray, modifier = Modifier.size(21.dp))
         }
-        Icon(Icons.Default.GraphicEq, contentDescription = null, tint = Accent, modifier = Modifier.size(28.dp))
+    }
+}
+
+@Composable
+private fun MiniIconButton(enabled: Boolean = true, onClick: () -> Unit, content: @Composable () -> Unit) {
+    Box(
+        Modifier
+            .size(38.dp)
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = if (enabled) 0.26f else 0.12f))
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) { content() }
+}
+
+@Composable
+private fun GlassChip(text: String, color: Color = Color.White) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color.White.copy(alpha = 0.12f))
+            .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(999.dp))
+            .padding(horizontal = 9.dp, vertical = 5.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(text, color = color, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
     }
 }
 
@@ -420,12 +472,42 @@ private fun ZoomPill(zoom: Float, modifier: Modifier = Modifier) {
     Box(
         modifier
             .clip(RoundedCornerShape(999.dp))
-            .background(Color.Black.copy(alpha = 0.58f))
-            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(999.dp))
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .background(Color.White.copy(alpha = 0.16f))
+            .border(1.dp, Color.White.copy(alpha = 0.25f), RoundedCornerShape(999.dp))
+            .padding(horizontal = 9.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text("${String.format(Locale.US, "%.1f", zoom)}×", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        Text("${String.format(Locale.US, "%.1f", zoom)}×", color = Color.White, fontWeight = FontWeight.Black, fontSize = 12.sp)
+    }
+}
+
+@Composable
+private fun ZoomPopupWheel(zoom: Float, accent: Color, onZoom: (Float) -> Unit, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .size(128.dp)
+            .clip(CircleShape)
+            .background(Color.White.copy(alpha = 0.82f))
+            .border(1.dp, Color.White.copy(alpha = 0.75f), CircleShape)
+            .pointerInput(Unit) {
+                detectDragGestures { change, dragAmount ->
+                    change.consume()
+                    val delta = (dragAmount.x - dragAmount.y) / 105f
+                    onZoom((zoom + delta).coerceIn(1f, 10f))
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(Modifier.fillMaxSize().padding(11.dp)) {
+            val stroke = 9.dp.toPx()
+            drawArc(Color.Black.copy(alpha = 0.14f), -220f, 260f, false, style = Stroke(stroke, cap = StrokeCap.Round))
+            val sweep = ((zoom - 1f) / 9f) * 260f
+            drawArc(accent, -220f, sweep, false, style = Stroke(stroke, cap = StrokeCap.Round))
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("ZOOM", color = Color.Black.copy(alpha = 0.55f), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            Text("${String.format(Locale.US, "%.1f", zoom)}×", color = Color.Black, fontSize = 22.sp, fontWeight = FontWeight.Black)
+        }
     }
 }
 
@@ -443,46 +525,91 @@ private fun StabilizerSettingsSheet(
     val zoom by viewModel.zoomLevel.collectAsState()
     val fps by viewModel.currentFps.collectAsState()
     val resolution by viewModel.currentResolution.collectAsState()
+    val filter by viewModel.currentFilter.collectAsState()
+    val theme by viewModel.currentTheme.collectAsState()
+    val cinematicBars by viewModel.isCinematicBarsEnabled.collectAsState()
+    val fpsBoost by viewModel.isFpsBoostEnabled.collectAsState()
+    val flashOn by viewModel.isFlashEnabled.collectAsState()
+    val accent = themeAccent(theme)
 
-    Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.10f), Color.White.copy(alpha = 0.03f))))
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("Smart Tools", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Black)
+            Column {
+                Text("Glass Smart Tools", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Black)
+                Text("সব সেটিংস সেভ থাকবে", color = Color(0xFFB8C1CC), fontSize = 11.sp)
+            }
             IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White) }
         }
 
-        SettingSwitch("Stabilization", "CameraX hardware EIS + gyro crop transform", stabilizationOn) {
-            viewModel.updateSetting("STABILIZATION_ACTIVE", it)
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            CompactToggle("EIS", stabilizationOn, accent) { viewModel.updateSetting("STABILIZATION_ACTIVE", it) }
+            CompactToggle("Delay", delayedPreview, accent, onDelayedPreview)
+            CompactToggle("60FPS", fpsBoost, accent) {
+                viewModel.updateSetting("FPS_BOOST", it)
+                viewModel.updateSetting("CAMERA_FPS", if (it) 60 else 30)
+            }
+            CompactToggle("Bars", cinematicBars, accent) { viewModel.updateSetting("CINEMATIC_BARS", it) }
+            CompactToggle("Flash", flashOn, accent) {
+                viewModel.updateSetting("FLASH", it)
+                CameraGlobals.cameraControl?.enableTorch(it)
+            }
         }
-        SettingSwitch("1-2s delayed preview", "Frames are buffered before showing stable view", delayedPreview, onDelayedPreview)
 
-        Text("Mode", color = Color(0xFFB8C1CC), fontWeight = FontWeight.Bold)
-        SegmentedRow(listOf("AI Stabilized", "Action Mode", "Cinematic Mode", "Extreme Stabilizer"), mode) {
+        Text("Stabilizer", color = Color(0xFFB8C1CC), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+        SegmentedRow(listOf("AI Stabilized", "Action Mode", "Cinematic Mode", "Extreme Stabilizer"), mode, accent) {
             viewModel.updateSetting("STABILIZATION_MODE", it)
             viewModel.updateSetting("STABILIZATION_ACTIVE", true)
         }
+        SegmentedRow(listOf("Low", "Medium", "High", "Ultra"), level, accent) { viewModel.updateSetting("STABILIZATION_LEVEL", it) }
 
-        Text("Level", color = Color(0xFFB8C1CC), fontWeight = FontWeight.Bold)
-        SegmentedRow(listOf("Low", "Medium", "High", "Ultra"), level) { viewModel.updateSetting("STABILIZATION_LEVEL", it) }
+        Text("Video", color = Color(0xFFB8C1CC), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+        SegmentedRow(listOf("720P", "1080P", "4K"), resolution, accent) { viewModel.updateSetting("CAMERA_RESOLUTION", it) }
+        SegmentedRow(listOf("30", "60"), fps.toString(), accent) {
+            viewModel.updateSetting("CAMERA_FPS", it.toInt())
+            viewModel.updateSetting("FPS_BOOST", it == "60")
+        }
 
-        Text("Quality", color = Color(0xFFB8C1CC), fontWeight = FontWeight.Bold)
-        SegmentedRow(listOf("720P", "1080P", "4K"), resolution) { viewModel.updateSetting("CAMERA_RESOLUTION", it) }
-        SegmentedRow(listOf("24", "30", "60"), fps.toString()) { viewModel.updateSetting("CAMERA_FPS", it.toInt()) }
+        Text("Filters", color = Color(0xFFB8C1CC), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+        SegmentedRow(listOf("Natural", "Cinematic", "Warm", "Cool", "Noir"), filter, accent) { viewModel.updateSetting("CAMERA_FILTER", it) }
 
-        Text("Zoom wheel", color = Color.White, fontWeight = FontWeight.Bold)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-            ZoomWheel(zoom = zoom, onZoom = { value ->
-                viewModel.zoomLevel.value = value
+        Text("Glass Themes", color = Color(0xFFB8C1CC), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+        SegmentedRow(listOf("Emerald", "Blue", "Purple", "Gold", "Red"), theme, accent) { viewModel.updateSetting("UI_THEME", it) }
+
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            ZoomWheel(zoom = zoom, accent = accent, onZoom = { value ->
+                viewModel.updateSetting("ZOOM_LEVEL", value)
                 CameraGlobals.cameraControl?.setZoomRatio(value)
             })
             Column(Modifier.weight(1f)) {
-                Text("${String.format(Locale.US, "%.1f", zoom)}×", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Black)
+                Text("Zoom ${String.format(Locale.US, "%.1f", zoom)}×", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Black)
                 Slider(value = zoom, onValueChange = {
-                    viewModel.zoomLevel.value = it
+                    viewModel.updateSetting("ZOOM_LEVEL", it)
                     CameraGlobals.cameraControl?.setZoomRatio(it)
                 }, valueRange = 1f..10f)
             }
         }
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(10.dp))
+    }
+}
+
+@Composable
+private fun CompactToggle(title: String, checked: Boolean, accent: Color, onChecked: (Boolean) -> Unit) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (checked) accent.copy(alpha = 0.92f) else Color.White.copy(alpha = 0.12f))
+            .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(999.dp))
+            .clickable { onChecked(!checked) }
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(title, color = if (checked) Color.Black else Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black)
     }
 }
 
@@ -498,17 +625,17 @@ private fun SettingSwitch(title: String, subtitle: String, checked: Boolean, onC
 }
 
 @Composable
-private fun SegmentedRow(items: List<String>, selected: String, onSelect: (String) -> Unit) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+private fun SegmentedRow(items: List<String>, selected: String, accent: Color = Accent, onSelect: (String) -> Unit) {
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
         items.forEach { item ->
             val active = item == selected
             Surface(
-                modifier = Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).clickable { onSelect(item) },
-                color = if (active) Accent else Color(0xFF1B212A),
+                modifier = Modifier.clip(RoundedCornerShape(999.dp)).clickable { onSelect(item) },
+                color = if (active) accent else Color.White.copy(alpha = 0.12f),
                 contentColor = if (active) Color.Black else Color.White
             ) {
-                Box(Modifier.padding(PaddingValues(horizontal = 6.dp, vertical = 10.dp)), contentAlignment = Alignment.Center) {
-                    Text(item, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                Box(Modifier.padding(PaddingValues(horizontal = 12.dp, vertical = 8.dp)), contentAlignment = Alignment.Center) {
+                    Text(item, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                 }
             }
         }
@@ -516,13 +643,13 @@ private fun SegmentedRow(items: List<String>, selected: String, onSelect: (Strin
 }
 
 @Composable
-private fun ZoomWheel(zoom: Float, onZoom: (Float) -> Unit) {
+private fun ZoomWheel(zoom: Float, accent: Color = Accent, onZoom: (Float) -> Unit) {
     Box(
         Modifier
             .size(132.dp)
             .clip(CircleShape)
             .background(Brush.radialGradient(listOf(Color(0xFF293241), Color(0xFF0B0F14))))
-            .border(2.dp, Accent.copy(alpha = 0.6f), CircleShape)
+            .border(2.dp, accent.copy(alpha = 0.6f), CircleShape)
             .pointerInput(Unit) {
                 detectDragGestures { change, dragAmount ->
                     change.consume()
@@ -536,7 +663,7 @@ private fun ZoomWheel(zoom: Float, onZoom: (Float) -> Unit) {
             val stroke = 10.dp.toPx()
             drawArc(Color.White.copy(alpha = 0.14f), -215f, 250f, false, style = Stroke(stroke, cap = StrokeCap.Round))
             val sweep = ((zoom - 1f) / 9f) * 250f
-            drawArc(Accent, -215f, sweep, false, style = Stroke(stroke, cap = StrokeCap.Round))
+            drawArc(accent, -215f, sweep, false, style = Stroke(stroke, cap = StrokeCap.Round))
             val angle = Math.toRadians((-215f + sweep).toDouble())
             val radius = size.minDimension / 2f - stroke
             val center = Offset(size.width / 2f, size.height / 2f)
@@ -547,6 +674,32 @@ private fun ZoomWheel(zoom: Float, onZoom: (Float) -> Unit) {
             Text("${String.format(Locale.US, "%.1f", zoom)}×", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Black)
         }
     }
+}
+
+@Composable
+private fun FilterOverlay(filter: String, cinematicBars: Boolean) {
+    val overlay = when (filter) {
+        "Cinematic" -> Color(0xFF0F2A4A).copy(alpha = 0.13f)
+        "Warm" -> Color(0xFFFFA135).copy(alpha = 0.11f)
+        "Cool" -> Color(0xFF38BDF8).copy(alpha = 0.10f)
+        "Noir" -> Color.Black.copy(alpha = 0.18f)
+        else -> Color.Transparent
+    }
+    if (overlay.alpha > 0f) Box(Modifier.fillMaxSize().background(overlay))
+    if (cinematicBars) {
+        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
+            Box(Modifier.fillMaxWidth().height(34.dp).background(Color.Black.copy(alpha = 0.70f)))
+            Box(Modifier.fillMaxWidth().height(34.dp).background(Color.Black.copy(alpha = 0.70f)))
+        }
+    }
+}
+
+private fun themeAccent(theme: String): Color = when (theme) {
+    "Blue" -> Color(0xFF38BDF8)
+    "Purple" -> Color(0xFFA78BFA)
+    "Gold" -> Color(0xFFFBBF24)
+    "Red" -> Color(0xFFFB7185)
+    else -> Accent
 }
 
 private fun bindCameraUseCases(
@@ -573,8 +726,9 @@ private fun bindCameraUseCases(
             val nativeStabilization = try { Preview.getPreviewCapabilities(cameraInfo).isStabilizationSupported } catch (_: Throwable) { false }
             viewModel.updateCameraXStabilizationSupport(nativeStabilization)
 
+            val targetFps = fps.coerceIn(30, 60)
             val preview = Preview.Builder()
-                .setTargetFrameRate(Range(fps, fps))
+                .setTargetFrameRate(Range(30, targetFps))
                 .apply { if (stabilizationOn && nativeStabilization) setPreviewStabilizationEnabled(true) }
                 .build()
                 .also { it.setSurfaceProvider(previewView.surfaceProvider) }
@@ -611,6 +765,7 @@ private fun bindCameraUseCases(
             CameraGlobals.cameraControl = camera.cameraControl
             CameraGlobals.videoCapture = videoCapture
             CameraGlobals.cameraControl?.setZoomRatio(viewModel.zoomLevel.value.coerceIn(1f, 10f))
+            CameraGlobals.cameraControl?.enableTorch(viewModel.isFlashEnabled.value)
             onError(null)
         } catch (t: Throwable) {
             onError("Camera error: ${t.message ?: t.javaClass.simpleName}")
