@@ -129,7 +129,7 @@ tasks.register("generateUploadKeystore") {
     val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
     val keystoreFile = file(keystorePath)
     if (!keystoreFile.exists()) {
-      exec {
+      project.exec {
         commandLine(
           "keytool", "-genkeypair",
           "-v",
