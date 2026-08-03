@@ -124,27 +124,23 @@ dependencies {
 
 // Generate a local release keystore once if no external KEYSTORE_PATH is provided.
 // It is intentionally not regenerated if the file already exists.
-tasks.register("generateUploadKeystore") {
-  doLast {
-    val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
-    val keystoreFile = file(keystorePath)
-    if (!keystoreFile.exists()) {
-      project.exec {
-        commandLine(
-          "keytool", "-genkeypair",
-          "-v",
-          "-keystore", keystoreFile.absolutePath,
-          "-storepass", (System.getenv("STORE_PASSWORD") ?: "rakibcame123"),
-          "-keypass", (System.getenv("KEY_PASSWORD") ?: "rakibcame123"),
-          "-alias", "upload",
-          "-keyalg", "RSA",
-          "-keysize", "2048",
-          "-validity", "10000",
-          "-dname", "CN=RakibCame, OU=Camera, O=RakibCame, L=Dhaka, S=Dhaka, C=BD"
-        )
-      }
-    }
-  }
+val uploadKeystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
+
+tasks.register<Exec>("generateUploadKeystore") {
+  val keystoreFile = file(uploadKeystorePath)
+  onlyIf { !keystoreFile.exists() }
+  commandLine(
+    "keytool", "-genkeypair",
+    "-v",
+    "-keystore", keystoreFile.absolutePath,
+    "-storepass", (System.getenv("STORE_PASSWORD") ?: "rakibcame123"),
+    "-keypass", (System.getenv("KEY_PASSWORD") ?: "rakibcame123"),
+    "-alias", "upload",
+    "-keyalg", "RSA",
+    "-keysize", "2048",
+    "-validity", "10000",
+    "-dname", "CN=RakibCame, OU=Camera, O=RakibCame, L=Dhaka, S=Dhaka, C=BD"
+  )
 }
 
 tasks.matching { it.name == "preReleaseBuild" }.configureEach {
